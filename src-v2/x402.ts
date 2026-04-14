@@ -435,7 +435,15 @@ export class ExactSvmFacilitator {
       if (transaction instanceof VersionedTransaction) {
         transaction.sign([this.keypair]);
         const signature = await this.connection.sendRawTransaction(transaction.serialize());
-        await this.connection.confirmTransaction(signature, "confirmed");
+        const latest = await this.connection.getLatestBlockhash("confirmed");
+        await this.connection.confirmTransaction(
+          {
+            signature,
+            blockhash: latest.blockhash,
+            lastValidBlockHeight: latest.lastValidBlockHeight
+          },
+          "confirmed"
+        );
         return {
           success: true,
           network: this.config.paymentNetwork,
@@ -447,7 +455,15 @@ export class ExactSvmFacilitator {
 
       transaction.partialSign(this.keypair);
       const signature = await this.connection.sendRawTransaction(transaction.serialize());
-      await this.connection.confirmTransaction(signature, "confirmed");
+      const latest = await this.connection.getLatestBlockhash("confirmed");
+      await this.connection.confirmTransaction(
+        {
+          signature,
+          blockhash: latest.blockhash,
+          lastValidBlockHeight: latest.lastValidBlockHeight
+        },
+        "confirmed"
+      );
       return {
         success: true,
         network: this.config.paymentNetwork,

@@ -1,7 +1,8 @@
-﻿import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { buildCatalogEntries, buildRouteCatalog, routeCatalogMap } from "./catalog.js";
 import { loadConfig } from "./config.js";
+import { FixedWindowRateLimiter, ReplayProtector } from "./guards.js";
 import { EventLogger } from "./logger.js";
 import type { EventRecord, RequestContext, RouteSpec } from "./types.js";
 import { forwardToUpstream } from "./upstream.js";
@@ -10,6 +11,8 @@ import { ExactSvmFacilitator } from "./x402.js";
 const config = loadConfig();
 const logger = new EventLogger(config.eventLogPath);
 const facilitator = new ExactSvmFacilitator(config);
+const replayProtector = new ReplayProtector();
+const rateLimiter = new FixedWindowRateLimiter();
 const routes = buildRouteCatalog();
 const routeMap = routeCatalogMap(routes);
 const catalog = buildCatalogEntries(config, routes);
@@ -86,6 +89,45 @@ function requestUrl(request: IncomingMessage): URL {
   return new URL(request.url ?? "/", config.baseUrl);
 }
 
+function requestIp(request: IncomingMessage): string {
+  const forwarded = request.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim().length > 0) {
+    return forwarded.split(",")[0]!.trim();
+  }
+
+  return request.socket.remoteAddress ?? "unknown";
+}
+
+function requireInternalSettlementAuth(request: IncomingMessage): boolean {
+  const header = request.headers["x-agon-internal-secret"];
+  return typeof header === "string" && header === config.internalSettlementSecret;
+}
+
+function providerRateLimit(route: RouteSpec): number {
+  return route.surface === "das"
+    ? config.dasRateLimitPerSecond
+    : config.rpcRateLimitPerSecond;
+}
+
+function sendRateLimited(
+  response: ServerResponse,
+  retryAfterSeconds: number,
+  reason: string
+): void {
+  sendJson(
+    response,
+    429,
+    {
+      ok: false,
+      error: "rate_limited",
+      reason
+    },
+    {
+      "retry-after": String(retryAfterSeconds)
+    }
+  );
+}
+
 async function handlePaidRoute(
   request: IncomingMessage,
   response: ServerResponse,
@@ -108,6 +150,16 @@ async function handlePaidRoute(
   const bodyError = validateBodyForRoute(route, body);
   if (bodyError) {
     sendJson(response, 400, { ok: false, error: bodyError });
+    return;
+  }
+
+  const challengeRate = rateLimiter.consume(
+    `challenge:${requestIp(request)}`,
+    config.challengeRateLimitPerMinute,
+    60_000
+  );
+  if (!challengeRate.allowed) {
+    sendRateLimited(response, challengeRate.retryAfterSeconds, "challenge_rate_limit");
     return;
   }
 
@@ -218,6 +270,100 @@ async function handlePaidRoute(
     return;
   }
 
+  const replayKey = verification.settlementCacheKey!;
+  const reservation = replayProtector.reserve(replayKey);
+  if (!reservation.ok) {
+    sendJson(
+      response,
+      409,
+      {
+        ok: false,
+        error: "payment_already_used",
+        state: reservation.state
+      }
+    );
+    return;
+  }
+
+  const upstreamQuota = rateLimiter.consume(
+    `upstream:${route.provider}:${route.surface}`,
+    providerRateLimit(route),
+    1_000
+  );
+  if (!upstreamQuota.allowed) {
+    replayProtector.release(replayKey);
+    sendRateLimited(response, upstreamQuota.retryAfterSeconds, "provider_rate_limit");
+    return;
+  }
+
+  logEvent({
+    event: "payment_settle_started",
+    timestamp: new Date().toISOString(),
+    requestId: context.requestId,
+    routePath: route.path,
+    cluster: route.cluster,
+    provider: route.provider,
+    surface: route.surface,
+    method: route.method,
+    wallet: verification.payer,
+    paymentNetwork: config.paymentNetwork,
+    paymentAsset: config.usdcMint,
+    priceUsd: config.priceUsd
+  });
+
+  const settlement = await facilitator.settle(route, paymentPayload);
+  if (!settlement.success) {
+    replayProtector.release(replayKey);
+    logEvent({
+      event: "payment_settle_failed",
+      timestamp: new Date().toISOString(),
+      requestId: context.requestId,
+      routePath: route.path,
+      cluster: route.cluster,
+      provider: route.provider,
+      surface: route.surface,
+      method: route.method,
+      wallet: settlement.payer,
+      paymentNetwork: config.paymentNetwork,
+      paymentAsset: config.usdcMint,
+      priceUsd: config.priceUsd,
+      httpStatus: 402,
+      detail: { error: settlement.error }
+    });
+    sendJson(
+      response,
+      402,
+      {
+        ok: false,
+        error: "payment_settlement_failed",
+        reason: settlement.error
+      },
+      {
+        ...challengeHeaders(route),
+        [facilitator.getHeaders().paymentResponse]: facilitator.encodeSettlementResponse(settlement)
+      }
+    );
+    return;
+  }
+
+  replayProtector.markSettled(replayKey);
+  logEvent({
+    event: "payment_settle_succeeded",
+    timestamp: new Date().toISOString(),
+    requestId: context.requestId,
+    routePath: route.path,
+    cluster: route.cluster,
+    provider: route.provider,
+    surface: route.surface,
+    method: route.method,
+    wallet: settlement.payer,
+    paymentNetwork: config.paymentNetwork,
+    paymentAsset: config.usdcMint,
+    priceUsd: config.priceUsd,
+    httpStatus: 200,
+    detail: { transaction: settlement.transaction }
+  });
+
   const params = (body as { params: unknown }).params;
   logEvent({
     event: "upstream_request_started",
@@ -255,12 +401,24 @@ async function handlePaidRoute(
       priceUsd: config.priceUsd,
       upstreamLatencyMs: latency,
       httpStatus: 502,
-      detail: { error: error instanceof Error ? error.message : "upstream_failed" }
+      detail: {
+        error: error instanceof Error ? error.message : "upstream_failed",
+        settlementTransaction: settlement.transaction
+      }
     });
-    sendJson(response, 502, {
-      ok: false,
-      error: "upstream_request_failed"
-    });
+    sendJson(
+      response,
+      502,
+      {
+        ok: false,
+        error: "upstream_request_failed",
+        paymentSettled: true,
+        settlementTransaction: settlement.transaction
+      },
+      {
+        [facilitator.getHeaders().paymentResponse]: facilitator.encodeSettlementResponse(settlement)
+      }
+    );
     return;
   }
 
@@ -280,72 +438,6 @@ async function handlePaidRoute(
     priceUsd: config.priceUsd,
     upstreamLatencyMs,
     httpStatus: upstreamResult.status
-  });
-
-  logEvent({
-    event: "payment_settle_started",
-    timestamp: new Date().toISOString(),
-    requestId: context.requestId,
-    routePath: route.path,
-    cluster: route.cluster,
-    provider: route.provider,
-    surface: route.surface,
-    method: route.method,
-    wallet: verification.payer,
-    paymentNetwork: config.paymentNetwork,
-    paymentAsset: config.usdcMint,
-    priceUsd: config.priceUsd
-  });
-
-  const settlement = await facilitator.settle(route, paymentPayload);
-  if (!settlement.success) {
-    logEvent({
-      event: "payment_settle_failed",
-      timestamp: new Date().toISOString(),
-      requestId: context.requestId,
-      routePath: route.path,
-      cluster: route.cluster,
-      provider: route.provider,
-      surface: route.surface,
-      method: route.method,
-      wallet: settlement.payer,
-      paymentNetwork: config.paymentNetwork,
-      paymentAsset: config.usdcMint,
-      priceUsd: config.priceUsd,
-      httpStatus: 402,
-      detail: { error: settlement.error }
-    });
-    sendJson(
-      response,
-      402,
-      {
-        ok: false,
-        error: "payment_settlement_failed",
-        reason: settlement.error
-      },
-      {
-        ...challengeHeaders(route),
-        [facilitator.getHeaders().paymentResponse]: facilitator.encodeSettlementResponse(settlement)
-      }
-    );
-    return;
-  }
-
-  logEvent({
-    event: "payment_settle_succeeded",
-    timestamp: new Date().toISOString(),
-    requestId: context.requestId,
-    routePath: route.path,
-    cluster: route.cluster,
-    provider: route.provider,
-    surface: route.surface,
-    method: route.method,
-    wallet: settlement.payer,
-    paymentNetwork: config.paymentNetwork,
-    paymentAsset: config.usdcMint,
-    priceUsd: config.priceUsd,
-    httpStatus: 200,
-    detail: { transaction: settlement.transaction }
   });
 
   logEvent({
@@ -432,6 +524,11 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && url.pathname === "/facilitator/settle") {
+      if (!requireInternalSettlementAuth(request)) {
+        sendJson(response, 403, { ok: false, error: "Forbidden." });
+        return;
+      }
+
       const body = await readJsonBody(request);
       const routePath = typeof (body as Record<string, unknown>).routePath === "string"
         ? ((body as Record<string, unknown>).routePath as string)

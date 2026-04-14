@@ -51,6 +51,7 @@ export function loadConfig(): GatewayConfig {
     baseUrl: readString("AGON_GATEWAY_BASE_URL", "http://localhost:8080"),
     eventLogPath: readString("AGON_GATEWAY_EVENT_LOG_PATH", ".data/events.ndjson"),
     facilitatorWalletPath: readString("AGON_FACILITATOR_WALLET_PATH", process.env.AGON_OPERATOR_WALLET_PATH),
+    internalSettlementSecret: readString("AGON_INTERNAL_SETTLEMENT_SECRET"),
     payToWallet: readString("AGON_X402_PAY_TO_WALLET", process.env.AGON_GATEWAY_PAYEE_WALLET),
     usdcMint: readString("AGON_X402_USDC_MINT", MAINNET_USDC_MINT),
     priceUsd: readString("AGON_X402_PRICE_USD", "0.01"),
@@ -62,6 +63,9 @@ export function loadConfig(): GatewayConfig {
     alchemyMainnetRpcUrl: readString("ALCHEMY_MAINNET_RPC_URL"),
     alchemyDevnetRpcUrl: readString("ALCHEMY_DEVNET_RPC_URL"),
     heliusMainnetRpcUrl: readString("HELIUS_MAINNET_RPC_URL"),
-    heliusDevnetRpcUrl: readString("HELIUS_DEVNET_RPC_URL")
+    heliusDevnetRpcUrl: readString("HELIUS_DEVNET_RPC_URL"),
+    rpcRateLimitPerSecond: readNumber("AGON_RATE_LIMIT_RPC_RPS", "50"),
+    dasRateLimitPerSecond: readNumber("AGON_RATE_LIMIT_DAS_RPS", "10"),
+    challengeRateLimitPerMinute: readNumber("AGON_RATE_LIMIT_CHALLENGE_PER_MINUTE", "120")
   };
 }

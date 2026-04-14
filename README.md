@@ -1,4 +1,4 @@
-﻿# Agon Gateway
+# Agon Gateway
 
 Agon Gateway is the public x402-facing seller for Agon's paid Solana data products.
 
@@ -63,7 +63,7 @@ Supported DAS methods:
 - `GET /v1/catalog`
 - `GET /facilitator/supported`
 - `POST /facilitator/verify`
-- `POST /facilitator/settle`
+- `POST /facilitator/settle` (internal only)
 - `POST /v1/x402/...`
 
 ## Payment model
@@ -77,7 +77,7 @@ Current payment rail:
 - asset: Solana mainnet USDC
 - price: `$0.01` per call
 
-The gateway expects the facilitator wallet to act as the fee payer during settlement.
+The gateway expects the facilitator wallet to act as the fee payer during settlement. Settlement is confirmed before the upstream request is served, which keeps the flow aligned with standard x402.
 
 ## Logging
 
@@ -104,10 +104,12 @@ Important event types:
 Copy `.env.example` and set:
 
 - facilitator wallet path
+- internal settlement secret
 - recipient wallet for USDC payments
 - Solana mainnet RPC URL for settlement
 - Alchemy mainnet/devnet RPC URLs
 - Helius mainnet/devnet RPC URLs
+- rate limits for RPC, DAS, and unpaid challenge traffic
 
 ## Build
 
@@ -122,3 +124,4 @@ npm start
 - This package now compiles from `src-v2/`
 - The older Agon-specific gateway implementation is intentionally left out of the active build
 - Agon-native payment flow is planned for the next phase once discovery and onboarding surfaces are ready
+- Public paid routes are rate-limited to protect upstream provider quotas

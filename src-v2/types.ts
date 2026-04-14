@@ -106,6 +106,7 @@ export interface GatewayConfig {
   baseUrl: string;
   eventLogPath: string;
   facilitatorWalletPath: string;
+  internalSettlementSecret: string;
   payToWallet: string;
   usdcMint: string;
   priceUsd: string;
@@ -118,6 +119,9 @@ export interface GatewayConfig {
   alchemyDevnetRpcUrl: string;
   heliusMainnetRpcUrl: string;
   heliusDevnetRpcUrl: string;
+  rpcRateLimitPerSecond: number;
+  dasRateLimitPerSecond: number;
+  challengeRateLimitPerMinute: number;
 }
 
 export interface RequestContext {
