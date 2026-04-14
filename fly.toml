@@ -1,43 +1,23 @@
-app = "agon-gateway"
-primary_region = "fra"
-kill_signal = "SIGTERM"
-kill_timeout = 30
+# fly.toml app configuration file generated for agon-gateway on 2026-04-14T23:36:56Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'agon-gateway'
+primary_region = 'iad'
 
 [build]
-  dockerfile = "Dockerfile"
-
-[env]
-  PORT = "8080"
-  AGON_GATEWAY_BASE_URL = "https://agon-gateway.fly.dev"
-  AGON_GATEWAY_EVENT_LOG_PATH = "/data/events.ndjson"
-  AGON_FACILITATOR_WALLET_PATH = "/secrets/facilitator-wallet.json"
-  AGON_X402_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-  AGON_X402_PRICE_USD = "0.01"
-  AGON_X402_PRICE_ATOMIC = "10000"
-  AGON_RATE_LIMIT_RPC_RPS = "50"
-  AGON_RATE_LIMIT_DAS_RPS = "10"
-  AGON_RATE_LIMIT_CHALLENGE_PER_MINUTE = "120"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 1
+  min_machines_running = 0
+  processes = ['app']
 
-  [[http_service.checks]]
-    grace_period = "10s"
-    interval = "30s"
-    method = "GET"
-    timeout = "5s"
-    path = "/healthz"
-
-[mounts]
-  source = "data"
-  destination = "/data"
-  initial_size = "1gb"
-  snapshot_retention = 7
-
-[[files]]
-  guest_path = "/secrets/facilitator-wallet.json"
-  secret_name = "AGON_FACILITATOR_WALLET_B64"
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 1024
