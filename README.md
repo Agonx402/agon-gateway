@@ -119,6 +119,22 @@ npm run build
 npm start
 ```
 
+## Phantom key conversion
+
+If Phantom gives you a base58 private key export instead of a Solana wallet JSON file, you can convert it with:
+
+```bash
+npm run convert:phantom -- "<PHANTOM_BASE58_PRIVATE_KEY>" ../facilitator-wallet.json
+```
+
+Or from a text file:
+
+```bash
+npm run convert:phantom -- ./phantom-private-key.txt ../facilitator-wallet.json
+```
+
+The converter writes a standard Solana 64-byte wallet JSON array and prints the derived public key so you can sanity-check it before uploading it to Fly as `AGON_FACILITATOR_WALLET_B64`.
+
 ## Notes
 
 - This package now compiles from `src-v2/`

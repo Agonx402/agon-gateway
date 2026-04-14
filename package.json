@@ -6,12 +6,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
+    "convert:phantom": "node scripts/convert-phantom-key.mjs",
     "dev": "node --watch dist/server.js",
     "start": "node dist/server.js"
   },
   "dependencies": {
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
     "dotenv": "^16.6.1",
     "tweetnacl": "^1.0.3"
   },
