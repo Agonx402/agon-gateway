@@ -1,24 +1,33 @@
-﻿{
+{
   "name": "agon-gateway",
   "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "next build",
     "check": "tsc --noEmit -p tsconfig.json",
     "convert:phantom": "node scripts/convert-phantom-key.mjs",
-    "dev": "node --watch dist/server.js",
-    "start": "node dist/server.js"
+    "dev": "next dev",
+    "start": "next start"
   },
   "dependencies": {
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
+    "@upstash/redis": "^1.37.0",
+    "@x402/core": "^2.10.0",
+    "@x402/extensions": "^2.10.0",
+    "@x402/next": "^2.10.0",
+    "@x402/svm": "^2.10.0",
     "bs58": "^6.0.0",
     "dotenv": "^16.6.1",
+    "next": "^16.2.3",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "@types/react": "19.2.14",
     "typescript": "^5.8.3"
   }
 }

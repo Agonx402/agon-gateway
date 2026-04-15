@@ -1,7 +1,7 @@
 ﻿import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import dotenv from "dotenv";
-import type { GatewayConfig } from "./types.js";
+import type { GatewayConfig } from "./types";
 
 dotenv.config();
 
@@ -15,12 +15,20 @@ for (const candidate of [".env.local", ".env"]) {
 const SOLANA_MAINNET_CAIP2 = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-function readString(name: string, fallback?: string): string {
+function readOptionalString(name: string, fallback?: string): string | undefined {
   const value = process.env[name] ?? fallback;
   if (!value || value.trim().length === 0) {
-    throw new Error(`Missing required environment variable: ${name}`);
+    return undefined;
   }
   return value.trim();
+}
+
+function readString(name: string, fallback?: string): string {
+  const value = readOptionalString(name, fallback);
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
 }
 
 function readNumber(name: string, fallback?: string): number {
@@ -46,11 +54,14 @@ function readBigInt(name: string, fallback?: string): bigint {
 }
 
 export function loadConfig(): GatewayConfig {
+  const vercelUrl = readOptionalString("VERCEL_URL");
+  const baseUrlFallback = vercelUrl ? `https://${vercelUrl}` : "http://localhost:8080";
+
   return {
     port: readNumber("PORT", "8080"),
-    baseUrl: readString("AGON_GATEWAY_BASE_URL", "http://localhost:8080"),
-    eventLogPath: readString("AGON_GATEWAY_EVENT_LOG_PATH", ".data/events.ndjson"),
-    facilitatorWalletPath: readString("AGON_FACILITATOR_WALLET_PATH", process.env.AGON_OPERATOR_WALLET_PATH),
+    baseUrl: readString("AGON_GATEWAY_BASE_URL", baseUrlFallback),
+    facilitatorWalletBase64: readOptionalString("AGON_FACILITATOR_WALLET_B64"),
+    facilitatorWalletPath: readOptionalString("AGON_FACILITATOR_WALLET_PATH", process.env.AGON_OPERATOR_WALLET_PATH),
     internalSettlementSecret: readString("AGON_INTERNAL_SETTLEMENT_SECRET"),
     payToWallet: readString("AGON_X402_PAY_TO_WALLET", process.env.AGON_GATEWAY_PAYEE_WALLET),
     usdcMint: readString("AGON_X402_USDC_MINT", MAINNET_USDC_MINT),
@@ -66,6 +77,8 @@ export function loadConfig(): GatewayConfig {
     heliusDevnetRpcUrl: readString("HELIUS_DEVNET_RPC_URL"),
     rpcRateLimitPerSecond: readNumber("AGON_RATE_LIMIT_RPC_RPS", "50"),
     dasRateLimitPerSecond: readNumber("AGON_RATE_LIMIT_DAS_RPS", "10"),
-    challengeRateLimitPerMinute: readNumber("AGON_RATE_LIMIT_CHALLENGE_PER_MINUTE", "120")
+    challengeRateLimitPerMinute: readNumber("AGON_RATE_LIMIT_CHALLENGE_PER_MINUTE", "120"),
+    upstashRedisRestUrl: readString("UPSTASH_REDIS_REST_URL"),
+    upstashRedisRestToken: readString("UPSTASH_REDIS_REST_TOKEN")
   };
 }

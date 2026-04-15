@@ -104,8 +104,8 @@ export interface EventRecord {
 export interface GatewayConfig {
   port: number;
   baseUrl: string;
-  eventLogPath: string;
-  facilitatorWalletPath: string;
+  facilitatorWalletBase64?: string;
+  facilitatorWalletPath?: string;
   internalSettlementSecret: string;
   payToWallet: string;
   usdcMint: string;
@@ -122,6 +122,8 @@ export interface GatewayConfig {
   rpcRateLimitPerSecond: number;
   dasRateLimitPerSecond: number;
   challengeRateLimitPerMinute: number;
+  upstashRedisRestUrl: string;
+  upstashRedisRestToken: string;
 }
 
 export interface RequestContext {

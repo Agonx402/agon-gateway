@@ -1,36 +1,21 @@
 # Agon Gateway
 
-Agon Gateway is the public x402-facing seller for Agon's paid Solana data products.
+Agon Gateway is a Vercel-ready x402 seller for paid Solana RPC and DAS routes.
 
-Phase 2 focuses on one thing: expose route-based, Bazaar-friendly paid endpoints that use the standard x402 exact-payment flow first. Agon-native repeated-use payments come next, after the discovery, docs, MCP, and skill surfaces are ready.
+This version is intentionally narrow and safe:
 
-## What this gateway does
+- standard x402 `exact` flow only
+- Solana mainnet USDC settlement
+- Alchemy + Helius upstreams
+- replay protection and rate limiting backed by Upstash Redis
+- internal self-hosted facilitator endpoints protected by a shared secret
+- no Agon-native payment flow yet
 
-- Publishes concrete paid endpoints for Solana RPC and DAS
-- Supports both Alchemy and Helius upstreams
-- Supports both Solana `mainnet` and `devnet` reads
-- Charges a flat `$0.01` per request using Solana mainnet USDC
-- Runs its own facilitator flow inside the same service
-- Keeps structured logs for unpaid `402` traffic, paid requests, settlement attempts, and general usage
+## Public routes
 
-## Current scope
-
-This build is intentionally narrow:
-
-- standard x402 exact flow only
-- read-only endpoints only
-- no WebSockets
-- no write methods such as `sendTransaction`
-- no Agon-native flow yet
-
-## Paid route pattern
-
-Routes are explicit and Bazaar-friendly:
-
-```text
-/v1/x402/solana/{cluster}/{provider}/rpc/{method}
-/v1/x402/solana/{cluster}/{provider}/das/{method}
-```
+- `GET /healthz`
+- `GET /v1/catalog`
+- `POST /v1/x402/solana/{cluster}/{provider}/{surface}/{method}`
 
 Supported clusters:
 
@@ -57,71 +42,106 @@ Supported DAS methods:
 - `getAssetsByOwner`
 - `searchAssets`
 
-## Public routes
+## Internal facilitator routes
 
-- `GET /healthz`
-- `GET /v1/catalog`
-- `GET /facilitator/supported`
-- `POST /facilitator/verify`
-- `POST /facilitator/settle` (internal only)
-- `POST /v1/x402/...`
+These are server-to-server only and must not be exposed in product docs or discovery metadata:
 
-## Payment model
+- `GET /api/internal/facilitator/supported`
+- `POST /api/internal/facilitator/verify`
+- `POST /api/internal/facilitator/settle`
 
-Every paid route returns `402 Payment Required` until the caller retries with a valid `PAYMENT-SIGNATURE` header.
+They require:
+
+- `x-agon-internal-secret: <AGON_INTERNAL_SETTLEMENT_SECRET>`
+
+## Payment flow
+
+Every paid route uses standard x402 exact payment:
+
+1. request the paid route
+2. receive `402 Payment Required`
+3. retry with `PAYMENT-SIGNATURE`
+4. verify the payment and call the upstream provider
+5. settle through the internal facilitator only after a successful upstream response
+6. serve the response
 
 Current payment rail:
 
-- scheme: `exact`
 - network: `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`
-- asset: Solana mainnet USDC
+- asset: mainnet USDC
 - price: `$0.01` per call
 
-The gateway expects the facilitator wallet to act as the fee payer during settlement. Settlement is confirmed before the upstream request is served, which keeps the flow aligned with standard x402.
+## Hosted safety model
 
-## Logging
+For Vercel, the gateway avoids local disk and in-memory-only safety assumptions:
 
-The gateway writes:
+- replay protection is stored in Upstash Redis
+- rate limiting is stored in Upstash Redis
+- usage counters are stored in Upstash Redis
+- structured event logs go to stdout for Vercel logs
 
-- structured JSON logs to stdout
-- an append-only NDJSON event ledger to `AGON_GATEWAY_EVENT_LOG_PATH`
+Rate limits:
 
-Important event types:
+- unpaid challenges: `120/min` per IP
+- RPC routes: `50 rps`
+- DAS routes: `10 rps`
 
-- `challenge_issued`
-- `payment_received`
-- `payment_verified`
-- `payment_settle_started`
-- `payment_settle_succeeded`
-- `payment_settle_failed`
-- `upstream_request_started`
-- `upstream_request_succeeded`
-- `upstream_request_failed`
-- `usage_recorded`
+Request guardrails:
+
+- `getProgramAccounts` requires at least one filter and a `dataSlice.length <= 256`
+- paginated list methods cap `limit` at `100`
+- malformed or overly broad request payloads are rejected before settlement
 
 ## Environment
 
 Copy `.env.example` and set:
 
-- facilitator wallet path
-- internal settlement secret
-- recipient wallet for USDC payments
-- Solana mainnet RPC URL for settlement
-- Alchemy mainnet/devnet RPC URLs
-- Helius mainnet/devnet RPC URLs
-- rate limits for RPC, DAS, and unpaid challenge traffic
+- `AGON_GATEWAY_BASE_URL`
+- `AGON_INTERNAL_SETTLEMENT_SECRET`
+- `AGON_FACILITATOR_WALLET_B64` for hosted deploys
+- `AGON_FACILITATOR_WALLET_PATH` only for local fallback
+- `AGON_X402_PAY_TO_WALLET`
+- `AGON_X402_USDC_MINT`
+- `AGON_X402_PRICE_USD`
+- `AGON_X402_PRICE_ATOMIC`
+- `SOLANA_MAINNET_RPC_URL`
+- `ALCHEMY_MAINNET_RPC_URL`
+- `ALCHEMY_DEVNET_RPC_URL`
+- `HELIUS_MAINNET_RPC_URL`
+- `HELIUS_DEVNET_RPC_URL`
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
 
-## Build
+## Local build
 
 ```bash
 npm install
+npm run check
 npm run build
-npm start
 ```
+
+## Local dev
+
+```bash
+npm run dev
+```
+
+## Vercel deploy
+
+The repo now builds as a Next.js app-router backend on Vercel.
+
+Recommended rollout:
+
+1. deploy to the default `*.vercel.app` domain
+2. verify `/healthz`
+3. verify `/v1/catalog` with real env values
+4. test one unpaid `402`
+5. test one successful paid request
+6. point `gateway.agonx402.com` at the Vercel project
 
 ## Phantom key conversion
 
-If Phantom gives you a base58 private key export instead of a Solana wallet JSON file, you can convert it with:
+If Phantom gives you a base58 private key instead of a Solana wallet JSON file:
 
 ```bash
 npm run convert:phantom -- "<PHANTOM_BASE58_PRIVATE_KEY>" ../facilitator-wallet.json
@@ -133,11 +153,4 @@ Or from a text file:
 npm run convert:phantom -- ./phantom-private-key.txt ../facilitator-wallet.json
 ```
 
-The converter writes a standard Solana 64-byte wallet JSON array and prints the derived public key so you can sanity-check it before uploading it to Fly as `AGON_FACILITATOR_WALLET_B64`.
-
-## Notes
-
-- This package now compiles from `src-v2/`
-- The older Agon-specific gateway implementation is intentionally left out of the active build
-- Agon-native payment flow is planned for the next phase once discovery and onboarding surfaces are ready
-- Public paid routes are rate-limited to protect upstream provider quotas
+The converter writes a standard 64-byte Solana keypair JSON array and prints the derived public key so you can confirm it before base64-encoding it for `AGON_FACILITATOR_WALLET_B64`.

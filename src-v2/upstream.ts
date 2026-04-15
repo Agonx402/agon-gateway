@@ -1,4 +1,4 @@
-﻿import type { GatewayConfig, RouteSpec, UpstreamResult } from "./types.js";
+import type { GatewayConfig, RouteSpec, UpstreamResult } from "./types";
 
 function pickUpstreamUrl(config: GatewayConfig, route: RouteSpec): string {
   if (route.provider === "alchemy") {
@@ -15,7 +15,7 @@ function pickUpstreamUrl(config: GatewayConfig, route: RouteSpec): string {
 export async function forwardToUpstream(
   config: GatewayConfig,
   route: RouteSpec,
-  params: unknown
+  params: unknown,
 ): Promise<UpstreamResult> {
   const upstreamUrl = pickUpstreamUrl(config, route);
 
@@ -23,15 +23,15 @@ export async function forwardToUpstream(
     jsonrpc: "2.0",
     id: 1,
     method: route.method,
-    params
+    params,
   };
 
   const response = await fetch(upstreamUrl, {
     method: "POST",
     headers: {
-      "content-type": "application/json"
+      "content-type": "application/json",
     },
-    body: JSON.stringify(rpcBody)
+    body: JSON.stringify(rpcBody),
   });
 
   const rawText = await response.text();
@@ -59,12 +59,12 @@ export async function forwardToUpstream(
   if (parsed !== null && typeof parsed === "object" && "result" in parsed) {
     return {
       result: (parsed as { result: unknown }).result,
-      status: response.status
+      status: response.status,
     };
   }
 
   return {
     result: parsed,
-    status: response.status
+    status: response.status,
   };
 }
