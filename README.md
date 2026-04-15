@@ -5,6 +5,7 @@ Agon Gateway is a Vercel-ready x402 seller for paid Solana RPC and DAS routes.
 This version is intentionally narrow and safe:
 
 - standard x402 `exact` flow only
+- CDP facilitator for standard x402 verification + settlement
 - Solana mainnet USDC settlement
 - Alchemy + Helius upstreams
 - replay protection and rate limiting backed by Upstash Redis
@@ -62,7 +63,7 @@ Every paid route uses standard x402 exact payment:
 2. receive `402 Payment Required`
 3. retry with `PAYMENT-SIGNATURE`
 4. verify the payment and call the upstream provider
-5. settle through the internal facilitator only after a successful upstream response
+5. settle through the CDP facilitator only after a successful upstream response
 6. serve the response
 
 Current payment rail:
@@ -70,6 +71,12 @@ Current payment rail:
 - network: `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`
 - asset: mainnet USDC
 - price: `$0.01` per call
+
+Bazaar discovery note:
+
+- the CDP Bazaar crawler probes routes with an empty request body
+- paid routes must still return `402 Payment Required` for that probe
+- body validation now happens after the initial challenge for empty unpaid probes
 
 ## Hosted safety model
 
@@ -97,8 +104,8 @@ Request guardrails:
 Copy `.env.example` and set:
 
 - `AGON_GATEWAY_BASE_URL`
-- `AGON_INTERNAL_SETTLEMENT_SECRET`
-- `AGON_FACILITATOR_WALLET_BASE58`
+- `CDP_API_KEY_ID`
+- `CDP_API_KEY_SECRET`
 - `AGON_X402_PAY_TO_WALLET`
 - `AGON_X402_USDC_MINT`
 - `AGON_X402_PRICE_USD`
@@ -110,6 +117,11 @@ Copy `.env.example` and set:
 - `HELIUS_DEVNET_RPC_URL`
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
+
+Optional, only if you still want the internal facilitator routes available:
+
+- `AGON_INTERNAL_SETTLEMENT_SECRET`
+- `AGON_FACILITATOR_WALLET_BASE58`
 
 ## Local build
 

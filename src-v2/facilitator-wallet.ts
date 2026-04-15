@@ -15,5 +15,9 @@ function parseBase58WalletBytes(raw: string): Uint8Array {
 }
 
 export async function loadFacilitatorSigner(config: GatewayConfig) {
+  if (!config.facilitatorWalletBase58) {
+    throw new Error("Missing required environment variable: AGON_FACILITATOR_WALLET_BASE58");
+  }
+
   return createKeyPairSignerFromBytes(parseBase58WalletBytes(config.facilitatorWalletBase58));
 }

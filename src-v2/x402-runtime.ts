@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createFacilitatorConfig } from "@coinbase/x402";
 import { HTTPFacilitatorClient, x402HTTPResourceServer, x402ResourceServer, type HTTPProcessResult, type HTTPResponseInstructions, type RouteConfig, type RoutesConfig } from "@x402/core/server";
 import { x402Facilitator } from "@x402/core/facilitator";
 import { declareDiscoveryExtension, bazaarResourceServerExtension } from "@x402/extensions/bazaar";
@@ -22,7 +23,6 @@ interface GatewayRuntime {
   routeMap: Map<string, RouteSpec>;
   catalog: CatalogRouteEntry[];
   httpServer: x402HTTPResourceServer;
-  facilitator: x402Facilitator;
 }
 
 interface FacilitatorRuntime {
@@ -166,16 +166,10 @@ async function getFacilitatorRuntime(): Promise<FacilitatorRuntime> {
 }
 
 async function createRuntime(): Promise<GatewayRuntime> {
-  const { config, facilitator } = await getFacilitatorRuntime();
-
-  const facilitatorClient = new HTTPFacilitatorClient({
-    url: `${config.baseUrl}/api/internal/facilitator`,
-    createAuthHeaders: async () => ({
-      verify: { "x-agon-internal-secret": config.internalSettlementSecret },
-      settle: { "x-agon-internal-secret": config.internalSettlementSecret },
-      supported: { "x-agon-internal-secret": config.internalSettlementSecret },
-    }),
-  });
+  const config = loadConfig();
+  const facilitatorClient = new HTTPFacilitatorClient(
+    createFacilitatorConfig(config.cdpApiKeyId, config.cdpApiKeySecret),
+  );
 
   const resourceServer = new x402ResourceServer(facilitatorClient);
   registerExactSvmServerScheme(resourceServer, {
@@ -194,7 +188,6 @@ async function createRuntime(): Promise<GatewayRuntime> {
     routeMap: routeCatalogMap(routes),
     catalog: buildCatalogEntries(config, routes),
     httpServer,
-    facilitator,
   };
 }
 
@@ -241,14 +234,20 @@ export function handleHealthRequest(): NextResponse {
   });
 }
 
-async function parseRequestBody(request: NextRequest): Promise<unknown> {
+async function parseRequestBody(request: NextRequest): Promise<{ body: unknown; isEmpty: boolean }> {
   const clone = request.clone();
   const text = await clone.text();
   if (!text.trim()) {
-    return {};
+    return {
+      body: {},
+      isEmpty: true,
+    };
   }
 
-  return JSON.parse(text);
+  return {
+    body: JSON.parse(text),
+    isEmpty: false,
+  };
 }
 
 function validateBodyForRoute(route: RouteSpec, body: unknown): string | null {
@@ -275,25 +274,32 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
     return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
   }
 
+  const rawPaymentHeader = paymentHeader(request);
+
   let body: unknown;
+  let isEmptyBody = false;
   try {
-    body = await parseRequestBody(request);
+    const parsed = await parseRequestBody(request);
+    body = parsed.body;
+    isEmptyBody = parsed.isEmpty;
   } catch {
     return NextResponse.json({ ok: false, error: "Request body must be valid JSON." }, { status: 400 });
   }
 
-  const bodyError = validateBodyForRoute(route, body);
-  if (bodyError) {
-    return NextResponse.json({ ok: false, error: bodyError }, { status: 400 });
-  }
+  const isDiscoveryProbe = !rawPaymentHeader && isEmptyBody;
+  let params: unknown = undefined;
+  if (!isDiscoveryProbe) {
+    const bodyError = validateBodyForRoute(route, body);
+    if (bodyError) {
+      return NextResponse.json({ ok: false, error: bodyError }, { status: 400 });
+    }
 
-  const params = (body as { params: unknown }).params;
-  const paramsError = validateRouteParams(route, params);
-  if (paramsError) {
-    return NextResponse.json({ ok: false, error: paramsError }, { status: 400 });
+    params = (body as { params: unknown }).params;
+    const paramsError = validateRouteParams(route, params);
+    if (paramsError) {
+      return NextResponse.json({ ok: false, error: paramsError }, { status: 400 });
+    }
   }
-
-  const rawPaymentHeader = paymentHeader(request);
   if (!rawPaymentHeader) {
     const challengeLimit = await runtime.state.consumeRateLimit(
       `challenge:${requestIp(request)}`,
@@ -509,6 +515,10 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
 
 export async function requireInternalAuth(request: NextRequest): Promise<NextResponse | null> {
   const { config } = await getFacilitatorRuntime();
+  if (!config.internalSettlementSecret) {
+    return NextResponse.json({ ok: false, error: "Internal facilitator is not configured." }, { status: 500 });
+  }
+
   const header = request.headers.get("x-agon-internal-secret");
 
   if (header !== config.internalSettlementSecret) {

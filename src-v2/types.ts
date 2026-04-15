@@ -104,8 +104,10 @@ export interface EventRecord {
 export interface GatewayConfig {
   port: number;
   baseUrl: string;
-  facilitatorWalletBase58: string;
-  internalSettlementSecret: string;
+  cdpApiKeyId: string;
+  cdpApiKeySecret: string;
+  facilitatorWalletBase58?: string;
+  internalSettlementSecret?: string;
   payToWallet: string;
   usdcMint: string;
   priceUsd: string;
