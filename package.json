@@ -6,7 +6,6 @@
   "scripts": {
     "build": "next build",
     "check": "tsc --noEmit -p tsconfig.json",
-    "convert:phantom": "node scripts/convert-phantom-key.mjs",
     "dev": "next dev",
     "start": "next start"
   },

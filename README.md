@@ -98,8 +98,7 @@ Copy `.env.example` and set:
 
 - `AGON_GATEWAY_BASE_URL`
 - `AGON_INTERNAL_SETTLEMENT_SECRET`
-- `AGON_FACILITATOR_WALLET_B64` for hosted deploys
-- `AGON_FACILITATOR_WALLET_PATH` only for local fallback
+- `AGON_FACILITATOR_WALLET_BASE58`
 - `AGON_X402_PAY_TO_WALLET`
 - `AGON_X402_USDC_MINT`
 - `AGON_X402_PRICE_USD`
@@ -139,18 +138,8 @@ Recommended rollout:
 5. test one successful paid request
 6. point `gateway.agonx402.com` at the Vercel project
 
-## Phantom key conversion
+## Facilitator wallet format
 
-If Phantom gives you a base58 private key instead of a Solana wallet JSON file:
+Set `AGON_FACILITATOR_WALLET_BASE58` to the raw base58-encoded 64-byte Solana secret key for the facilitator wallet.
 
-```bash
-npm run convert:phantom -- "<PHANTOM_BASE58_PRIVATE_KEY>" ../facilitator-wallet.json
-```
-
-Or from a text file:
-
-```bash
-npm run convert:phantom -- ./phantom-private-key.txt ../facilitator-wallet.json
-```
-
-The converter writes a standard 64-byte Solana keypair JSON array and prints the derived public key so you can confirm it before base64-encoding it for `AGON_FACILITATOR_WALLET_B64`.
+Do not paste a JSON array like `[12,34,...]` here. This value must be the base58 string itself.

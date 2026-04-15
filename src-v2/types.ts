@@ -104,8 +104,7 @@ export interface EventRecord {
 export interface GatewayConfig {
   port: number;
   baseUrl: string;
-  facilitatorWalletBase64?: string;
-  facilitatorWalletPath?: string;
+  facilitatorWalletBase58: string;
   internalSettlementSecret: string;
   payToWallet: string;
   usdcMint: string;
