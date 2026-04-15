@@ -25,7 +25,13 @@ interface GatewayRuntime {
   facilitator: x402Facilitator;
 }
 
+interface FacilitatorRuntime {
+  config: GatewayConfig;
+  facilitator: x402Facilitator;
+}
+
 let runtimePromise: Promise<GatewayRuntime> | null = null;
+let facilitatorRuntimePromise: Promise<FacilitatorRuntime> | null = null;
 
 function buildDiscoveryExtension(config: GatewayConfig, route: RouteSpec) {
   return declareDiscoveryExtension({
@@ -133,7 +139,7 @@ async function recordEvent(state: HostedGatewayState, event: EventRecord, counte
   }
 }
 
-async function createRuntime(): Promise<GatewayRuntime> {
+async function createFacilitatorRuntime(): Promise<FacilitatorRuntime> {
   const config = loadConfig();
   const facilitatorSigner = await loadFacilitatorSigner(config);
   const facilitator = new x402Facilitator();
@@ -141,6 +147,26 @@ async function createRuntime(): Promise<GatewayRuntime> {
     signer: toFacilitatorSvmSigner(facilitatorSigner, { defaultRpcUrl: config.solanaMainnetRpcUrl }),
     networks: SOLANA_MAINNET_CAIP2,
   });
+
+  return {
+    config,
+    facilitator,
+  };
+}
+
+async function getFacilitatorRuntime(): Promise<FacilitatorRuntime> {
+  if (!facilitatorRuntimePromise) {
+    facilitatorRuntimePromise = createFacilitatorRuntime().catch((error) => {
+      facilitatorRuntimePromise = null;
+      throw error;
+    });
+  }
+
+  return facilitatorRuntimePromise;
+}
+
+async function createRuntime(): Promise<GatewayRuntime> {
+  const { config, facilitator } = await getFacilitatorRuntime();
 
   const facilitatorClient = new HTTPFacilitatorClient({
     url: `${config.baseUrl}/api/internal/facilitator`,
@@ -482,10 +508,10 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
 }
 
 export async function requireInternalAuth(request: NextRequest): Promise<NextResponse | null> {
-  const runtime = await getGatewayRuntime();
+  const { config } = await getFacilitatorRuntime();
   const header = request.headers.get("x-agon-internal-secret");
 
-  if (header !== runtime.config.internalSettlementSecret) {
+  if (header !== config.internalSettlementSecret) {
     return NextResponse.json({ ok: false, error: "Forbidden." }, { status: 403 });
   }
 
@@ -493,27 +519,27 @@ export async function requireInternalAuth(request: NextRequest): Promise<NextRes
 }
 
 export async function handleFacilitatorSupportedRequest(): Promise<NextResponse> {
-  const runtime = await getGatewayRuntime();
-  return NextResponse.json(runtime.facilitator.getSupported());
+  const { facilitator } = await getFacilitatorRuntime();
+  return NextResponse.json(facilitator.getSupported());
 }
 
 export async function handleFacilitatorVerifyRequest(request: NextRequest): Promise<NextResponse> {
-  const runtime = await getGatewayRuntime();
+  const { facilitator } = await getFacilitatorRuntime();
   const body = await parseRequestBody(request) as Record<string, unknown>;
-  const verification = await runtime.facilitator.verify(
-    body.paymentPayload as Parameters<typeof runtime.facilitator.verify>[0],
-    body.paymentRequirements as Parameters<typeof runtime.facilitator.verify>[1],
+  const verification = await facilitator.verify(
+    body.paymentPayload as Parameters<typeof facilitator.verify>[0],
+    body.paymentRequirements as Parameters<typeof facilitator.verify>[1],
   );
 
   return NextResponse.json(verification);
 }
 
 export async function handleFacilitatorSettleRequest(request: NextRequest): Promise<NextResponse> {
-  const runtime = await getGatewayRuntime();
+  const { facilitator } = await getFacilitatorRuntime();
   const body = await parseRequestBody(request) as Record<string, unknown>;
-  const settlement = await runtime.facilitator.settle(
-    body.paymentPayload as Parameters<typeof runtime.facilitator.settle>[0],
-    body.paymentRequirements as Parameters<typeof runtime.facilitator.settle>[1],
+  const settlement = await facilitator.settle(
+    body.paymentPayload as Parameters<typeof facilitator.settle>[0],
+    body.paymentRequirements as Parameters<typeof facilitator.settle>[1],
   );
 
   return NextResponse.json(settlement);
