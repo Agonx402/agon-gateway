@@ -30,6 +30,17 @@ const MAX_PROGRAM_ACCOUNT_FILTERS = 4;
 const MAX_DATA_SLICE_BYTES = 256;
 const MAX_MEMCMP_BYTES_LENGTH = 128;
 
+function isRouteSupported(cluster: ClusterName, provider: ProviderName, surface: SurfaceName): boolean {
+  // Alchemy documents Solana DAS against the mainnet endpoint only.
+  // Keeping undocumented devnet DAS routes out of the catalog avoids selling
+  // routes that currently fail upstream in production.
+  if (provider === "alchemy" && cluster === "devnet" && surface === "das") {
+    return false;
+  }
+
+  return true;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -318,11 +329,15 @@ export function buildRouteCatalog(): RouteSpec[] {
   for (const cluster of CLUSTERS) {
     for (const provider of PROVIDERS) {
       for (const rpc of RPC_METHODS) {
-        routes.push(buildRouteSpec(cluster, provider, "rpc", rpc.method, rpc.description));
+        if (isRouteSupported(cluster, provider, "rpc")) {
+          routes.push(buildRouteSpec(cluster, provider, "rpc", rpc.method, rpc.description));
+        }
       }
 
       for (const das of DAS_METHODS) {
-        routes.push(buildRouteSpec(cluster, provider, "das", das.method, das.description));
+        if (isRouteSupported(cluster, provider, "das")) {
+          routes.push(buildRouteSpec(cluster, provider, "das", das.method, das.description));
+        }
       }
     }
   }
