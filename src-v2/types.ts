@@ -4,11 +4,14 @@ export type SurfaceName = "rpc" | "das" | "tokens";
 export type HttpMethod = "GET" | "POST";
 export type RouteInputMode = "solana-envelope" | "query" | "json-body";
 export type RouteKind = "solana-rpc" | "solana-das" | "tokens-query" | "tokens-body";
+export type RouteAccessMode = "exact" | "siwx";
 
 export interface RouteSpec {
   path: string;
   httpMethod: HttpMethod;
   kind: RouteKind;
+  accessMode: RouteAccessMode;
+  paymentRequired: boolean;
   provider: ProviderName;
   surface: SurfaceName;
   cluster?: ClusterName;
@@ -18,7 +21,8 @@ export interface RouteSpec {
   inputSchema: Record<string, unknown>;
   inputExample: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
-  priceUsd: string;
+  priceUsd?: string;
+  authNetworks?: string[];
   upstreamPath: string;
   requiresUpstreamAuth: boolean;
   rateLimitScope: string;
@@ -41,9 +45,12 @@ export interface CatalogRouteEntry {
   surface: SurfaceName;
   method: string;
   description: string;
-  priceUsd: string;
-  paymentNetwork: string;
-  paymentAsset: {
+  accessMode: RouteAccessMode;
+  paymentRequired: boolean;
+  priceUsd?: string;
+  authNetworks?: string[];
+  paymentNetwork?: string;
+  paymentAsset?: {
     symbol: string;
     mint: string;
     decimals: number;
@@ -139,8 +146,6 @@ export interface GatewayConfig {
   usdcMint: string;
   priceUsd: string;
   priceAtomic: bigint;
-  tokensPriceUsd: string;
-  tokensPriceAtomic: bigint;
   paymentNetwork: string;
   paymentAssetSymbol: string;
   paymentAssetDecimals: number;

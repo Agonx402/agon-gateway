@@ -11,6 +11,11 @@ import {
 } from "@x402/core/server";
 import { x402Facilitator } from "@x402/core/facilitator";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
+import {
+  createSIWxRequestHook,
+  declareSIWxExtension,
+  siwxResourceServerExtension,
+} from "@x402/extensions/sign-in-with-x";
 import { NextAdapter } from "@x402/next";
 import { SOLANA_MAINNET_CAIP2, toFacilitatorSvmSigner } from "@x402/svm";
 import { registerExactSvmScheme as registerExactSvmFacilitatorScheme } from "@x402/svm/exact/facilitator";
@@ -60,20 +65,27 @@ const PROVIDER_LABELS: Record<CatalogRouteEntry["provider"], string> = {
 };
 
 function buildDiscoveryExtension(config: GatewayConfig, route: RouteSpec) {
+  const outputExample: Record<string, unknown> = {
+    ok: true,
+    provider: route.provider,
+    cluster: route.cluster,
+    surface: route.surface,
+    method: route.method,
+    result: route.provider === "tokens"
+      ? {}
+      : route.surface === "rpc"
+        ? {}
+        : { items: [] },
+  };
+
+  if (route.paymentRequired) {
+    outputExample.priceUsd = route.priceUsd;
+    outputExample.paymentNetwork = config.paymentNetwork;
+  }
+
   const output = {
     example: {
-      ok: true,
-      provider: route.provider,
-      cluster: route.cluster,
-      surface: route.surface,
-      method: route.method,
-      priceUsd: route.priceUsd,
-      paymentNetwork: config.paymentNetwork,
-      result: route.provider === "tokens"
-        ? {}
-        : route.surface === "rpc"
-          ? {}
-          : { items: [] },
+      ...outputExample,
     },
     schema: route.outputSchema,
   };
@@ -98,21 +110,55 @@ function buildDiscoveryExtension(config: GatewayConfig, route: RouteSpec) {
   });
 }
 
+function buildRouteExtensions(config: GatewayConfig, route: RouteSpec) {
+  const discovery = buildDiscoveryExtension(config, route);
+  if (route.accessMode !== "siwx") {
+    return discovery;
+  }
+
+  const network = route.authNetworks && route.authNetworks.length === 1
+    ? route.authNetworks[0]
+    : route.authNetworks;
+
+  return {
+    ...discovery,
+    ...declareSIWxExtension({
+      network,
+      statement: "Sign in with your wallet to access TokensAPI through Agon.",
+      expirationSeconds: 300,
+    }),
+  };
+}
+
 function buildRoutesConfig(config: GatewayConfig, routes: RouteSpec[]): RoutesConfig {
   const entries: Record<string, RouteConfig> = {};
 
   for (const route of routes) {
-    const paymentPrice = route.priceUsd.startsWith("$") ? route.priceUsd : `$${route.priceUsd}`;
+    if (route.accessMode === "exact") {
+      if (!route.priceUsd) {
+        continue;
+      }
+
+      const paymentPrice = route.priceUsd.startsWith("$") ? route.priceUsd : `$${route.priceUsd}`;
+      entries[`${route.httpMethod} ${route.path}`] = {
+        accepts: {
+          scheme: "exact",
+          price: paymentPrice,
+          network: SOLANA_MAINNET_CAIP2,
+          payTo: config.payToWallet,
+        },
+        description: route.description,
+        mimeType: "application/json",
+        extensions: buildRouteExtensions(config, route),
+      };
+      continue;
+    }
+
     entries[`${route.httpMethod} ${route.path}`] = {
-      accepts: {
-        scheme: "exact",
-        price: paymentPrice,
-        network: SOLANA_MAINNET_CAIP2,
-        payTo: config.payToWallet,
-      },
+      accepts: [],
       description: route.description,
       mimeType: "application/json",
-      extensions: buildDiscoveryExtension(config, route),
+      extensions: buildRouteExtensions(config, route),
     };
   }
 
@@ -123,6 +169,12 @@ function paymentHeader(request: NextRequest): string | undefined {
   return request.headers.get("payment-signature")
     ?? request.headers.get("PAYMENT-SIGNATURE")
     ?? request.headers.get("x-payment")
+    ?? undefined;
+}
+
+function siwxHeader(request: NextRequest): string | undefined {
+  return request.headers.get("SIGN-IN-WITH-X")
+    ?? request.headers.get("sign-in-with-x")
     ?? undefined;
 }
 
@@ -168,9 +220,13 @@ function eventBase(config: GatewayConfig, route?: RouteSpec): Omit<EventRecord, 
     provider: route.provider,
     surface: route.surface,
     method: route.method,
-    paymentNetwork: config.paymentNetwork,
-    paymentAsset: config.usdcMint,
-    priceUsd: route.priceUsd,
+    ...(route.paymentRequired
+      ? {
+        paymentNetwork: config.paymentNetwork,
+        paymentAsset: config.usdcMint,
+        priceUsd: route.priceUsd,
+      }
+      : {}),
   };
 }
 
@@ -209,6 +265,7 @@ async function getFacilitatorRuntime(): Promise<FacilitatorRuntime> {
 
 async function createRuntime(): Promise<GatewayRuntime> {
   const config = loadConfig();
+  const state = new HostedGatewayState(config);
   const facilitatorClient = new HTTPFacilitatorClient(
     createFacilitatorConfig(config.cdpApiKeyId, config.cdpApiKeySecret),
   );
@@ -218,14 +275,16 @@ async function createRuntime(): Promise<GatewayRuntime> {
     networks: [SOLANA_MAINNET_CAIP2],
   });
   resourceServer.registerExtension(bazaarResourceServerExtension);
+  resourceServer.registerExtension(siwxResourceServerExtension);
 
   const routes = buildRouteCatalog(config);
-  const httpServer = new x402HTTPResourceServer(resourceServer, buildRoutesConfig(config, routes));
+  const httpServer = new x402HTTPResourceServer(resourceServer, buildRoutesConfig(config, routes))
+    .onProtectedRequest(createSIWxRequestHook({ storage: state }));
   await httpServer.initialize();
 
   return {
     config,
-    state: new HostedGatewayState(config),
+    state,
     routes,
     catalog: buildCatalogEntries(config, routes),
     httpServer,
@@ -311,9 +370,9 @@ export async function handleCatalogRequest(request?: NextRequest): Promise<NextR
     ok: true,
     version: 1,
     payment: {
-      scheme: "exact",
+      modes: ["exact", "siwx"],
       network: runtime.config.paymentNetwork,
-      pricingModel: "per-route",
+      pricingModel: runtime.catalog.some((route) => route.accessMode === "siwx") ? "mixed" : "per-route",
       asset: {
         symbol: runtime.config.paymentAssetSymbol,
         mint: runtime.config.usdcMint,
@@ -474,6 +533,93 @@ function upstreamFailureResponse(error: unknown): { status: number; body: Record
   };
 }
 
+async function handleGrantedRouteRequest(
+  runtime: GatewayRuntime,
+  resolvedRoute: ResolvedRoute,
+  requestId: string,
+  params: unknown,
+): Promise<NextResponse> {
+  const route = resolvedRoute.route;
+  const providerLimit = await runtime.state.consumeRateLimit(
+    `upstream:${route.rateLimitScope}`,
+    route.rateLimitLimit,
+    route.rateLimitWindowMs,
+  );
+
+  if (!providerLimit.allowed) {
+    return NextResponse.json(
+      { ok: false, error: "rate_limited", reason: "provider_rate_limit" },
+      { status: 429, headers: { "retry-after": String(providerLimit.retryAfterSeconds) } },
+    );
+  }
+
+  await recordEvent(runtime.state, {
+    event: "upstream_request_started",
+    timestamp: new Date().toISOString(),
+    requestId,
+    ...eventBase(runtime.config, route),
+  });
+
+  const upstreamStartedAt = Date.now();
+  let upstream;
+  let upstreamLatencyMs = 0;
+  try {
+    upstream = await forwardToUpstream(runtime.config, resolvedRoute, params);
+    upstreamLatencyMs = Date.now() - upstreamStartedAt;
+  } catch (error) {
+    upstreamLatencyMs = Date.now() - upstreamStartedAt;
+    const failureResponse = upstreamFailureResponse(error);
+
+    await recordEvent(runtime.state, {
+      event: "upstream_request_failed",
+      timestamp: new Date().toISOString(),
+      requestId,
+      ...eventBase(runtime.config, route),
+      upstreamLatencyMs,
+      httpStatus: failureResponse.status,
+      detail: {
+        error: error instanceof Error ? error.message : "upstream_failed",
+      },
+    }, "upstream_request_failed");
+
+    return NextResponse.json(failureResponse.body, { status: failureResponse.status });
+  }
+
+  await recordEvent(runtime.state, {
+    event: "upstream_request_succeeded",
+    timestamp: new Date().toISOString(),
+    requestId,
+    ...eventBase(runtime.config, route),
+    upstreamLatencyMs,
+    httpStatus: upstream.status,
+  }, "upstream_request_succeeded");
+
+  await recordEvent(runtime.state, {
+    event: "usage_recorded",
+    timestamp: new Date().toISOString(),
+    requestId,
+    ...eventBase(runtime.config, route),
+    upstreamLatencyMs,
+    httpStatus: 200,
+  }, `usage:${route.provider}:${route.cluster ?? "none"}:${route.surface}:${route.method}`);
+
+  return NextResponse.json(
+    {
+      ok: true,
+      provider: route.provider,
+      cluster: route.cluster,
+      surface: route.surface,
+      method: route.method,
+      accessMode: route.accessMode,
+      paymentRequired: route.paymentRequired,
+      result: upstream.result,
+    },
+    {
+      status: 200,
+    },
+  );
+}
+
 export async function handlePaidRouteRequest(request: NextRequest): Promise<NextResponse> {
   const runtime = await getGatewayRuntime();
   const requestId = randomUUID();
@@ -489,12 +635,13 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
 
   const route = resolvedRoute.route;
   const rawPaymentHeader = paymentHeader(request);
+  const rawSiwxHeader = siwxHeader(request);
   const extractedParams = await extractRouteParams(request, resolvedRoute, rawPaymentHeader);
   if ("error" in extractedParams) {
     return NextResponse.json({ ok: false, error: extractedParams.error }, { status: extractedParams.status });
   }
 
-  if (!rawPaymentHeader) {
+  if (!rawPaymentHeader && !rawSiwxHeader) {
     const challengeLimit = await runtime.state.consumeRateLimit(
       `challenge:${requestIp(request)}`,
       runtime.config.challengeRateLimitPerMinute,
@@ -507,7 +654,7 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
         { status: 429, headers: { "retry-after": String(challengeLimit.retryAfterSeconds) } },
       );
     }
-  } else {
+  } else if (rawPaymentHeader) {
     await recordEvent(runtime.state, {
       event: "payment_received",
       timestamp: new Date().toISOString(),
@@ -515,6 +662,14 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
       ...eventBase(runtime.config, route),
       httpStatus: 202,
     }, "payment_received");
+  } else {
+    await recordEvent(runtime.state, {
+      event: "auth_received",
+      timestamp: new Date().toISOString(),
+      requestId,
+      ...eventBase(runtime.config, route),
+      httpStatus: 202,
+    }, "auth_received");
   }
 
   const adapter = new NextAdapter(request);
@@ -543,18 +698,35 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
   }
 
   if (processResult.type === "no-payment-required") {
-    return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
+    await recordEvent(runtime.state, {
+      event: route.accessMode === "siwx" ? "auth_verified" : "access_granted",
+      timestamp: new Date().toISOString(),
+      requestId,
+      ...eventBase(runtime.config, route),
+      httpStatus: 200,
+    }, route.accessMode === "siwx" ? "auth_verified" : "access_granted");
+    return handleGrantedRouteRequest(runtime, resolvedRoute, requestId, extractedParams.params);
   }
 
   if (processResult.type === "payment-error") {
+    const event = rawPaymentHeader
+      ? "payment_verification_failed"
+      : rawSiwxHeader
+        ? "auth_verification_failed"
+        : "challenge_issued";
+
     await recordEvent(runtime.state, {
-      event: rawPaymentHeader ? "payment_verified" : "challenge_issued",
+      event,
       timestamp: new Date().toISOString(),
       requestId,
       ...eventBase(runtime.config, route),
       httpStatus: processResult.response.status,
-      detail: rawPaymentHeader ? { reason: "verification_failed" } : undefined,
-    }, rawPaymentHeader ? "payment_verification_failed" : "challenge_issued");
+      detail: rawPaymentHeader
+        ? { reason: "verification_failed" }
+        : rawSiwxHeader
+          ? { reason: "authentication_failed" }
+          : undefined,
+    }, event);
     return responseFromInstructions(processResult.response);
   }
 
@@ -690,7 +862,7 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
       cluster: route.cluster,
       surface: route.surface,
       method: route.method,
-      priceUsd: route.priceUsd,
+      ...(route.priceUsd ? { priceUsd: route.priceUsd } : {}),
       paymentNetwork: runtime.config.paymentNetwork,
       result: upstream.result,
     },

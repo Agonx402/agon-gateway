@@ -1,14 +1,15 @@
 # Agon Gateway
 
-Agon Gateway is a Vercel-ready x402 seller for paid Solana RPC, DAS, and Tokens API routes.
+Agon Gateway is a Vercel-ready x402 gateway for paid Solana RPC/DAS routes and wallet-authenticated Tokens API routes.
 
 This version is intentionally narrow and safe:
 
-- standard x402 `exact` flow only
+- standard x402 `exact` flow for paid infrastructure routes
+- SIWX auth-only x402 flow for Tokens API routes
 - CDP facilitator for standard x402 verification + settlement
 - Solana mainnet USDC settlement
 - Alchemy + Helius upstreams
-- Tokens API v1 proxying with server-side `x-api-key` auth
+- Tokens API v1 proxying with server-side `x-api-key` auth and wallet signatures instead of end-user API keys
 - replay protection and rate limiting backed by Upstash Redis
 - internal self-hosted facilitator endpoints protected by a shared secret
 - no Agon-native payment flow yet
@@ -80,7 +81,7 @@ Not proxied:
 
 - `GET /v1/whoami`
 
-The Tokens docs mark `whoami` as a first-party Clerk-session endpoint rather than an API-key endpoint, so it is intentionally excluded from the paid gateway surface.
+The Tokens docs mark `whoami` as a first-party Clerk-session endpoint rather than an API-key endpoint, so it is intentionally excluded from the gateway surface.
 
 ## Internal facilitator routes
 
@@ -94,9 +95,9 @@ They require:
 
 - `x-agon-internal-secret: <AGON_INTERNAL_SETTLEMENT_SECRET>`
 
-## Payment flow
+## Access flow
 
-Every paid route uses standard x402 exact payment:
+Paid Solana RPC / DAS routes use standard x402 exact payment:
 
 1. request the paid route
 2. receive `402 Payment Required`
@@ -105,12 +106,20 @@ Every paid route uses standard x402 exact payment:
 5. settle through the CDP facilitator only after a successful upstream response
 6. serve the response
 
+Tokens API routes use SIWX auth-only x402:
+
+1. request a Tokens route
+2. receive `402 Payment Required` with `sign-in-with-x`
+3. retry with `SIGN-IN-WITH-X`
+4. verify the wallet signature
+5. call the upstream Tokens API and serve the response
+
 Current payment rail:
 
 - network: `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`
 - asset: mainnet USDC
 - Solana RPC / DAS price: `$0.01` per call
-- Tokens API price: `$0.001` per call
+- Tokens API routes: no payment, wallet-authenticated via SIWX
 
 Bazaar discovery note:
 
@@ -132,7 +141,7 @@ Rate limits:
 - unpaid challenges: `120/min` per IP
 - RPC routes: `50 rps`
 - DAS routes: `10 rps`
-- Tokens API routes: `30 rpm` across the shared upstream API key by default
+- Tokens API routes: wallet-authenticated via SIWX and still capped at `30 rpm` across the shared upstream API key by default
 
 Request guardrails:
 
@@ -153,8 +162,6 @@ Copy `.env.example` and set:
 - `AGON_X402_USDC_MINT`
 - `AGON_X402_PRICE_USD`
 - `AGON_X402_PRICE_ATOMIC`
-- `AGON_TOKENS_PRICE_USD`
-- `AGON_TOKENS_PRICE_ATOMIC`
 - `SOLANA_MAINNET_RPC_URL`
 - `ALCHEMY_MAINNET_RPC_URL`
 - `ALCHEMY_DEVNET_RPC_URL`
@@ -206,6 +213,7 @@ Recommended rollout:
 - `catalog.returnedRoutes`
 - `catalog.filters.provider`
 - `categories.providers[]` with labels, counts, and provider-specific `href`s
+- per-route `accessMode` values (`exact` for paid Solana routes, `siwx` for Tokens routes)
 
 That lets clients either:
 

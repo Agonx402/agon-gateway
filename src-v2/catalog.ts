@@ -315,6 +315,8 @@ function buildSolanaRouteSpec(
     path: `/v1/x402/solana/${cluster}/${provider}/${surface}/${method}`,
     httpMethod: "POST",
     kind: surface === "rpc" ? "solana-rpc" : "solana-das",
+    accessMode: "exact",
+    paymentRequired: true,
     cluster,
     provider,
     surface,
@@ -367,13 +369,20 @@ export function buildCatalogEntries(config: GatewayConfig, routes: RouteSpec[]):
     surface: route.surface,
     method: route.method,
     description: route.description,
-    priceUsd: route.priceUsd,
-    paymentNetwork: config.paymentNetwork,
-    paymentAsset: {
-      symbol: config.paymentAssetSymbol,
-      mint: config.usdcMint,
-      decimals: config.paymentAssetDecimals,
-    },
+    accessMode: route.accessMode,
+    paymentRequired: route.paymentRequired,
+    ...(route.priceUsd ? { priceUsd: route.priceUsd } : {}),
+    ...(route.authNetworks ? { authNetworks: route.authNetworks } : {}),
+    ...(route.paymentRequired
+      ? {
+        paymentNetwork: config.paymentNetwork,
+        paymentAsset: {
+          symbol: config.paymentAssetSymbol,
+          mint: config.usdcMint,
+          decimals: config.paymentAssetDecimals,
+        },
+      }
+      : {}),
     enabled: true,
     inputSchema: route.inputSchema,
     outputSchema: route.outputSchema,

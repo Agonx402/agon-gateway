@@ -1,3 +1,4 @@
+import { SOLANA_DEVNET, SOLANA_MAINNET } from "@x402/extensions/sign-in-with-x";
 import type { GatewayConfig, RouteSpec } from "./types";
 
 const TOKENS_RATE_LIMIT_WINDOW_MS = 60_000;
@@ -84,6 +85,8 @@ function buildTokensQueryRoute(
     path: options.path,
     httpMethod: "GET",
     kind: "tokens-query",
+    accessMode: "siwx",
+    paymentRequired: false,
     provider: "tokens",
     surface: "tokens",
     method: options.method,
@@ -92,7 +95,7 @@ function buildTokensQueryRoute(
     inputSchema: options.inputSchema,
     inputExample: options.inputExample ?? {},
     outputSchema: createOutputSchema(),
-    priceUsd: config.tokensPriceUsd,
+    authNetworks: [SOLANA_MAINNET, SOLANA_DEVNET],
     upstreamPath: options.upstreamPath,
     requiresUpstreamAuth: options.requiresUpstreamAuth ?? true,
     rateLimitScope: "tokens",
@@ -118,6 +121,8 @@ function buildTokensBodyRoute(
     path: options.path,
     httpMethod: "POST",
     kind: "tokens-body",
+    accessMode: "siwx",
+    paymentRequired: false,
     provider: "tokens",
     surface: "tokens",
     method: options.method,
@@ -126,7 +131,7 @@ function buildTokensBodyRoute(
     inputSchema: options.inputSchema,
     inputExample: options.inputExample,
     outputSchema: createOutputSchema(),
-    priceUsd: config.tokensPriceUsd,
+    authNetworks: [SOLANA_MAINNET, SOLANA_DEVNET],
     upstreamPath: options.upstreamPath,
     requiresUpstreamAuth: true,
     rateLimitScope: "tokens",

@@ -68,8 +68,6 @@ export function loadConfig(): GatewayConfig {
     usdcMint: readString("AGON_X402_USDC_MINT", MAINNET_USDC_MINT),
     priceUsd: readString("AGON_X402_PRICE_USD", "0.01"),
     priceAtomic: readBigInt("AGON_X402_PRICE_ATOMIC", "10000"),
-    tokensPriceUsd: readString("AGON_TOKENS_PRICE_USD", "0.001"),
-    tokensPriceAtomic: readBigInt("AGON_TOKENS_PRICE_ATOMIC", "1000"),
     paymentNetwork: SOLANA_MAINNET_CAIP2,
     paymentAssetSymbol: "USDC",
     paymentAssetDecimals: 6,

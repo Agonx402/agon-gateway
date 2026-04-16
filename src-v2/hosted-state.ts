@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { Redis } from "@upstash/redis";
 import type { GatewayConfig } from "./types";
 
 const PROCESSING_TTL_SECONDS = 120;
 const SETTLED_TTL_SECONDS = 86_400;
+const SIWX_NONCE_TTL_SECONDS = 60 * 10;
 
 export interface RateLimitOutcome {
   allowed: boolean;
@@ -72,7 +74,34 @@ export class HostedGatewayState {
     }
   }
 
+  public async hasPaid(_resource: string, _address: string): Promise<boolean> {
+    return false;
+  }
+
+  public async recordPayment(_resource: string, _address: string): Promise<void> {
+    // Tokens routes are auth-only and paid routes remain pay-per-call.
+  }
+
+  public async hasUsedNonce(nonce: string): Promise<boolean> {
+    const used = await this.redis.get<string>(this.siwxNonceKey(nonce));
+    return used === "used";
+  }
+
+  public async recordNonce(nonce: string): Promise<void> {
+    await this.redis.set(this.siwxNonceKey(nonce), "used", {
+      ex: SIWX_NONCE_TTL_SECONDS,
+    });
+  }
+
   private replayKey(key: string): string {
     return `replay:${key}`;
+  }
+
+  private siwxNonceKey(nonce: string): string {
+    return `siwx:nonce:${this.hashKey(nonce)}`;
+  }
+
+  private hashKey(input: string): string {
+    return createHash("sha256").update(input).digest("hex");
   }
 }
