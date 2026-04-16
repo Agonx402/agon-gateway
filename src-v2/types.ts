@@ -54,6 +54,13 @@ export interface CatalogRouteEntry {
   pathParamsSchema?: Record<string, unknown>;
 }
 
+export interface CatalogProviderEntry {
+  id: ProviderName;
+  label: string;
+  routeCount: number;
+  href: string;
+}
+
 export interface PaymentAsset {
   address: string;
   symbol: string;

@@ -21,6 +21,13 @@ This version is intentionally narrow and safe:
 - `GET /v1/x402/tokens/...`
 - `POST /v1/x402/tokens/assets/market-snapshots`
 
+Catalog helpers:
+
+- `GET /v1/catalog` returns the full flat route list plus provider categories
+- `GET /v1/catalog?provider=alchemy`
+- `GET /v1/catalog?provider=helius`
+- `GET /v1/catalog?provider=tokens` (also accepts `tokensapi`)
+
 Supported clusters:
 
 - `mainnet`
@@ -30,6 +37,7 @@ Supported providers:
 
 - `alchemy`
 - `helius`
+- `tokens` (`TokensAPI` in catalog labels)
 
 Supported RPC methods:
 
@@ -189,6 +197,20 @@ Recommended rollout:
 4. test one unpaid `402`
 5. test one successful paid request
 6. point `gateway.agonx402.com` at the Vercel project
+
+## Catalog shape
+
+`/v1/catalog` remains backward-compatible for clients that only read `routes`, but it now also returns:
+
+- `catalog.totalRoutes`
+- `catalog.returnedRoutes`
+- `catalog.filters.provider`
+- `categories.providers[]` with labels, counts, and provider-specific `href`s
+
+That lets clients either:
+
+- fetch the full catalog once and render provider sections from `categories.providers`, or
+- fetch a provider-scoped catalog directly with `?provider=alchemy|helius|tokens`
 
 ## Facilitator wallet format
 

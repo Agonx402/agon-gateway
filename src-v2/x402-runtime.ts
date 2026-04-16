@@ -22,6 +22,7 @@ import { loadFacilitatorSigner } from "./facilitator-wallet";
 import { HostedGatewayState } from "./hosted-state";
 import { logEvent } from "./hosted-logger";
 import type {
+  CatalogProviderEntry,
   CatalogRouteEntry,
   EventRecord,
   GatewayConfig,
@@ -51,6 +52,12 @@ interface ParsedRequestBody {
 
 let runtimePromise: Promise<GatewayRuntime> | null = null;
 let facilitatorRuntimePromise: Promise<FacilitatorRuntime> | null = null;
+
+const PROVIDER_LABELS: Record<CatalogRouteEntry["provider"], string> = {
+  alchemy: "Alchemy",
+  helius: "Helius",
+  tokens: "TokensAPI",
+};
 
 function buildDiscoveryExtension(config: GatewayConfig, route: RouteSpec) {
   const output = {
@@ -241,8 +248,65 @@ export async function getCatalog(): Promise<CatalogRouteEntry[]> {
   return runtime.catalog;
 }
 
-export async function handleCatalogRequest(): Promise<NextResponse> {
+function normalizeProviderFilter(rawValue: string | null): CatalogRouteEntry["provider"] | null {
+  if (!rawValue) {
+    return null;
+  }
+
+  const normalized = rawValue.trim().toLowerCase();
+  switch (normalized) {
+    case "alchemy":
+      return "alchemy";
+    case "helius":
+      return "helius";
+    case "tokens":
+    case "tokensapi":
+    case "tokens-api":
+      return "tokens";
+    default:
+      return null;
+  }
+}
+
+function buildProviderCategories(
+  allRoutes: CatalogRouteEntry[],
+  baseUrl: string,
+): CatalogProviderEntry[] {
+  return Object.entries(PROVIDER_LABELS).map(([providerId, label]) => {
+    const provider = providerId as CatalogRouteEntry["provider"];
+    const href = new URL("/v1/catalog", baseUrl);
+    href.searchParams.set("provider", provider);
+
+    return {
+      id: provider,
+      label,
+      routeCount: allRoutes.filter((route) => route.provider === provider).length,
+      href: href.toString(),
+    };
+  });
+}
+
+export async function handleCatalogRequest(request?: NextRequest): Promise<NextResponse> {
   const runtime = await getGatewayRuntime();
+  const rawProviderFilter = request?.nextUrl.searchParams.get("provider") ?? null;
+  const providerFilter = normalizeProviderFilter(rawProviderFilter);
+
+  if (rawProviderFilter && !providerFilter) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "invalid_provider_filter",
+        supportedProviders: Object.keys(PROVIDER_LABELS),
+      },
+      { status: 400 },
+    );
+  }
+
+  const routes = providerFilter
+    ? runtime.catalog.filter((route) => route.provider === providerFilter)
+    : runtime.catalog;
+  const categories = buildProviderCategories(runtime.catalog, runtime.config.baseUrl);
+
   return NextResponse.json({
     ok: true,
     version: 1,
@@ -256,7 +320,17 @@ export async function handleCatalogRequest(): Promise<NextResponse> {
         decimals: runtime.config.paymentAssetDecimals,
       },
     },
-    routes: runtime.catalog,
+    catalog: {
+      totalRoutes: runtime.catalog.length,
+      returnedRoutes: routes.length,
+      filters: {
+        provider: providerFilter,
+      },
+    },
+    categories: {
+      providers: categories,
+    },
+    routes,
   });
 }
 
