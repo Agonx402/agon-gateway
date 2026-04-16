@@ -1,6 +1,6 @@
 # Agon Gateway
 
-Agon Gateway is a Vercel-ready x402 seller for paid Solana RPC and DAS routes.
+Agon Gateway is a Vercel-ready x402 seller for paid Solana RPC, DAS, and Tokens API routes.
 
 This version is intentionally narrow and safe:
 
@@ -8,6 +8,7 @@ This version is intentionally narrow and safe:
 - CDP facilitator for standard x402 verification + settlement
 - Solana mainnet USDC settlement
 - Alchemy + Helius upstreams
+- Tokens API v1 proxying with server-side `x-api-key` auth
 - replay protection and rate limiting backed by Upstash Redis
 - internal self-hosted facilitator endpoints protected by a shared secret
 - no Agon-native payment flow yet
@@ -17,6 +18,8 @@ This version is intentionally narrow and safe:
 - `GET /healthz`
 - `GET /v1/catalog`
 - `POST /v1/x402/solana/{cluster}/{provider}/{surface}/{method}`
+- `GET /v1/x402/tokens/...`
+- `POST /v1/x402/tokens/assets/market-snapshots`
 
 Supported clusters:
 
@@ -42,6 +45,34 @@ Supported DAS methods:
 - `getAsset`
 - `getAssetsByOwner`
 - `searchAssets`
+
+Supported Tokens API routes:
+
+- `GET /v1/x402/tokens/health`
+- `GET /v1/x402/tokens/assets/search`
+- `GET /v1/x402/tokens/assets/resolve`
+- `GET /v1/x402/tokens/assets/curated`
+- `POST /v1/x402/tokens/assets/market-snapshots`
+- `GET /v1/x402/tokens/assets/variant-markets`
+- `GET /v1/x402/tokens/assets/risk-summary`
+- `GET /v1/x402/tokens/assets/:assetId`
+- `GET /v1/x402/tokens/assets/:assetId/variants`
+- `GET /v1/x402/tokens/assets/:assetId/variant-top-markets`
+- `GET /v1/x402/tokens/assets/:assetId/variant-market`
+- `GET /v1/x402/tokens/assets/:assetId/markets`
+- `GET /v1/x402/tokens/assets/:assetId/ohlcv`
+- `GET /v1/x402/tokens/assets/:assetId/price-chart`
+- `GET /v1/x402/tokens/assets/:assetId/profile`
+- `GET /v1/x402/tokens/assets/:assetId/tickers`
+- `GET /v1/x402/tokens/assets/:assetId/risk-summary`
+- `GET /v1/x402/tokens/assets/:assetId/risk-details`
+- `GET /v1/x402/tokens/assets/:assetId/description`
+
+Not proxied:
+
+- `GET /v1/whoami`
+
+The Tokens docs mark `whoami` as a first-party Clerk-session endpoint rather than an API-key endpoint, so it is intentionally excluded from the paid gateway surface.
 
 ## Internal facilitator routes
 
@@ -70,7 +101,8 @@ Current payment rail:
 
 - network: `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`
 - asset: mainnet USDC
-- price: `$0.01` per call
+- Solana RPC / DAS price: `$0.01` per call
+- Tokens API price: `$0.001` per call
 
 Bazaar discovery note:
 
@@ -92,11 +124,14 @@ Rate limits:
 - unpaid challenges: `120/min` per IP
 - RPC routes: `50 rps`
 - DAS routes: `10 rps`
+- Tokens API routes: `30 rpm` across the shared upstream API key by default
 
 Request guardrails:
 
 - `getProgramAccounts` requires at least one filter and a `dataSlice.length <= 256`
 - paginated list methods cap `limit` at `100`
+- Tokens API batch routes cap `market-snapshots` at `250` ids and `variant-markets` at `50`
+- Tokens API asset/query routes validate documented enums and pagination bounds before payment settlement
 - malformed or overly broad request payloads are rejected before settlement
 
 ## Environment
@@ -110,11 +145,16 @@ Copy `.env.example` and set:
 - `AGON_X402_USDC_MINT`
 - `AGON_X402_PRICE_USD`
 - `AGON_X402_PRICE_ATOMIC`
+- `AGON_TOKENS_PRICE_USD`
+- `AGON_TOKENS_PRICE_ATOMIC`
 - `SOLANA_MAINNET_RPC_URL`
 - `ALCHEMY_MAINNET_RPC_URL`
 - `ALCHEMY_DEVNET_RPC_URL`
 - `HELIUS_MAINNET_RPC_URL`
 - `HELIUS_DEVNET_RPC_URL`
+- `TOKENS_API_BASE_URL`
+- `TOKENS_API_KEY`
+- `AGON_RATE_LIMIT_TOKENS_PER_MINUTE`
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
 

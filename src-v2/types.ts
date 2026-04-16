@@ -1,23 +1,42 @@
-﻿export type ProviderName = "alchemy" | "helius";
+export type ProviderName = "alchemy" | "helius" | "tokens";
 export type ClusterName = "mainnet" | "devnet";
-export type SurfaceName = "rpc" | "das";
-export type ParamsShape = "array" | "object";
+export type SurfaceName = "rpc" | "das" | "tokens";
+export type HttpMethod = "GET" | "POST";
+export type RouteInputMode = "solana-envelope" | "query" | "json-body";
+export type RouteKind = "solana-rpc" | "solana-das" | "tokens-query" | "tokens-body";
 
 export interface RouteSpec {
   path: string;
-  cluster: ClusterName;
+  httpMethod: HttpMethod;
+  kind: RouteKind;
   provider: ProviderName;
   surface: SurfaceName;
+  cluster?: ClusterName;
   method: string;
   description: string;
-  paramsShape: ParamsShape;
+  inputMode: RouteInputMode;
   inputSchema: Record<string, unknown>;
+  inputExample: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
+  priceUsd: string;
+  upstreamPath: string;
+  requiresUpstreamAuth: boolean;
+  rateLimitScope: string;
+  rateLimitLimit: number;
+  rateLimitWindowMs: number;
+  pathParamsSchema?: Record<string, unknown>;
+  pathParamsExample?: Record<string, string>;
+}
+
+export interface ResolvedRoute {
+  route: RouteSpec;
+  pathParams: Record<string, string>;
 }
 
 export interface CatalogRouteEntry {
   path: string;
-  cluster: ClusterName;
+  httpMethod: HttpMethod;
+  cluster?: ClusterName;
   provider: ProviderName;
   surface: SurfaceName;
   method: string;
@@ -32,6 +51,7 @@ export interface CatalogRouteEntry {
   enabled: boolean;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
+  pathParamsSchema?: Record<string, unknown>;
 }
 
 export interface PaymentAsset {
@@ -112,6 +132,8 @@ export interface GatewayConfig {
   usdcMint: string;
   priceUsd: string;
   priceAtomic: bigint;
+  tokensPriceUsd: string;
+  tokensPriceAtomic: bigint;
   paymentNetwork: string;
   paymentAssetSymbol: string;
   paymentAssetDecimals: number;
@@ -120,8 +142,11 @@ export interface GatewayConfig {
   alchemyDevnetRpcUrl: string;
   heliusMainnetRpcUrl: string;
   heliusDevnetRpcUrl: string;
+  tokensApiBaseUrl: string;
+  tokensApiKey: string;
   rpcRateLimitPerSecond: number;
   dasRateLimitPerSecond: number;
+  tokensRateLimitPerMinute: number;
   challengeRateLimitPerMinute: number;
   upstashRedisRestUrl: string;
   upstashRedisRestToken: string;

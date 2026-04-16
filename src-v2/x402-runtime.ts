@@ -1,26 +1,40 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createFacilitatorConfig } from "@coinbase/x402";
-import { HTTPFacilitatorClient, x402HTTPResourceServer, x402ResourceServer, type HTTPProcessResult, type HTTPResponseInstructions, type RouteConfig, type RoutesConfig } from "@x402/core/server";
+import {
+  HTTPFacilitatorClient,
+  type HTTPProcessResult,
+  type HTTPResponseInstructions,
+  type RouteConfig,
+  type RoutesConfig,
+  x402HTTPResourceServer,
+  x402ResourceServer,
+} from "@x402/core/server";
 import { x402Facilitator } from "@x402/core/facilitator";
-import { declareDiscoveryExtension, bazaarResourceServerExtension } from "@x402/extensions/bazaar";
+import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { NextAdapter } from "@x402/next";
 import { SOLANA_MAINNET_CAIP2, toFacilitatorSvmSigner } from "@x402/svm";
-import { registerExactSvmScheme as registerExactSvmServerScheme } from "@x402/svm/exact/server";
 import { registerExactSvmScheme as registerExactSvmFacilitatorScheme } from "@x402/svm/exact/facilitator";
+import { registerExactSvmScheme as registerExactSvmServerScheme } from "@x402/svm/exact/server";
 import { NextRequest, NextResponse } from "next/server";
-import { buildCatalogEntries, buildRouteCatalog, routeCatalogMap, validateRouteParams } from "./catalog";
+import { buildCatalogEntries, buildRouteCatalog, resolveRoute, validateRouteParams } from "./catalog";
 import { loadConfig } from "./config";
 import { loadFacilitatorSigner } from "./facilitator-wallet";
 import { HostedGatewayState } from "./hosted-state";
 import { logEvent } from "./hosted-logger";
-import type { CatalogRouteEntry, EventRecord, GatewayConfig, RouteSpec } from "./types";
-import { forwardToUpstream } from "./upstream";
+import type {
+  CatalogRouteEntry,
+  EventRecord,
+  GatewayConfig,
+  HttpMethod,
+  ResolvedRoute,
+  RouteSpec,
+} from "./types";
+import { forwardToUpstream, UpstreamHttpError } from "./upstream";
 
 interface GatewayRuntime {
   config: GatewayConfig;
   state: HostedGatewayState;
   routes: RouteSpec[];
-  routeMap: Map<string, RouteSpec>;
   catalog: CatalogRouteEntry[];
   httpServer: x402HTTPResourceServer;
 }
@@ -30,38 +44,59 @@ interface FacilitatorRuntime {
   facilitator: x402Facilitator;
 }
 
+interface ParsedRequestBody {
+  body: unknown;
+  isEmpty: boolean;
+}
+
 let runtimePromise: Promise<GatewayRuntime> | null = null;
 let facilitatorRuntimePromise: Promise<FacilitatorRuntime> | null = null;
 
 function buildDiscoveryExtension(config: GatewayConfig, route: RouteSpec) {
+  const output = {
+    example: {
+      ok: true,
+      provider: route.provider,
+      cluster: route.cluster,
+      surface: route.surface,
+      method: route.method,
+      priceUsd: route.priceUsd,
+      paymentNetwork: config.paymentNetwork,
+      result: route.provider === "tokens"
+        ? {}
+        : route.surface === "rpc"
+          ? {}
+          : { items: [] },
+    },
+    schema: route.outputSchema,
+  };
+
+  if (route.inputMode === "query") {
+    return declareDiscoveryExtension({
+      input: route.inputExample,
+      inputSchema: route.inputSchema,
+      pathParams: route.pathParamsExample,
+      pathParamsSchema: route.pathParamsSchema,
+      output,
+    });
+  }
+
   return declareDiscoveryExtension({
-    input: route.paramsShape === "array"
-      ? { params: [] }
-      : { params: {} },
+    input: route.inputExample,
     inputSchema: route.inputSchema,
+    pathParams: route.pathParamsExample,
+    pathParamsSchema: route.pathParamsSchema,
     bodyType: "json",
-    output: {
-      example: {
-        ok: true,
-        provider: route.provider,
-        cluster: route.cluster,
-        surface: route.surface,
-        method: route.method,
-        priceUsd: config.priceUsd,
-        paymentNetwork: config.paymentNetwork,
-        result: route.surface === "rpc" ? {} : { items: [] }
-      },
-      schema: route.outputSchema
-    }
+    output,
   });
 }
 
 function buildRoutesConfig(config: GatewayConfig, routes: RouteSpec[]): RoutesConfig {
-  const paymentPrice = config.priceUsd.startsWith("$") ? config.priceUsd : `$${config.priceUsd}`;
   const entries: Record<string, RouteConfig> = {};
 
   for (const route of routes) {
-    entries[`POST ${route.path}`] = {
+    const paymentPrice = route.priceUsd.startsWith("$") ? route.priceUsd : `$${route.priceUsd}`;
+    entries[`${route.httpMethod} ${route.path}`] = {
       accepts: {
         scheme: "exact",
         price: paymentPrice,
@@ -128,7 +163,7 @@ function eventBase(config: GatewayConfig, route?: RouteSpec): Omit<EventRecord, 
     method: route.method,
     paymentNetwork: config.paymentNetwork,
     paymentAsset: config.usdcMint,
-    priceUsd: config.priceUsd,
+    priceUsd: route.priceUsd,
   };
 }
 
@@ -177,7 +212,7 @@ async function createRuntime(): Promise<GatewayRuntime> {
   });
   resourceServer.registerExtension(bazaarResourceServerExtension);
 
-  const routes = buildRouteCatalog();
+  const routes = buildRouteCatalog(config);
   const httpServer = new x402HTTPResourceServer(resourceServer, buildRoutesConfig(config, routes));
   await httpServer.initialize();
 
@@ -185,7 +220,6 @@ async function createRuntime(): Promise<GatewayRuntime> {
     config,
     state: new HostedGatewayState(config),
     routes,
-    routeMap: routeCatalogMap(routes),
     catalog: buildCatalogEntries(config, routes),
     httpServer,
   };
@@ -215,7 +249,7 @@ export async function handleCatalogRequest(): Promise<NextResponse> {
     payment: {
       scheme: "exact",
       network: runtime.config.paymentNetwork,
-      priceUsd: runtime.config.priceUsd,
+      pricingModel: "per-route",
       asset: {
         symbol: runtime.config.paymentAssetSymbol,
         mint: runtime.config.usdcMint,
@@ -234,7 +268,7 @@ export function handleHealthRequest(): NextResponse {
   });
 }
 
-async function parseRequestBody(request: NextRequest): Promise<{ body: unknown; isEmpty: boolean }> {
+async function parseRequestBody(request: NextRequest): Promise<ParsedRequestBody> {
   const clone = request.clone();
   const text = await clone.text();
   if (!text.trim()) {
@@ -250,56 +284,142 @@ async function parseRequestBody(request: NextRequest): Promise<{ body: unknown; 
   };
 }
 
-function validateBodyForRoute(route: RouteSpec, body: unknown): string | null {
+function extractQueryParams(request: NextRequest): { params: URLSearchParams; isEmpty: boolean } {
+  const params = new URLSearchParams(request.nextUrl.search);
+  return {
+    params,
+    isEmpty: Array.from(params.keys()).length === 0,
+  };
+}
+
+function validateEnvelopeBody(route: RouteSpec, body: unknown): { params: unknown } | { error: string } {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return "Request body must be a JSON object.";
+    return { error: "Request body must be a JSON object." };
   }
 
   const params = (body as Record<string, unknown>).params;
-  if (route.paramsShape === "array") {
-    return Array.isArray(params) ? null : 'RPC routes require body shape: { "params": [...] }.';
+  if (route.kind === "solana-rpc") {
+    return Array.isArray(params)
+      ? { params }
+      : { error: 'RPC routes require body shape: { "params": [...] }.' };
   }
 
   return params && typeof params === "object" && !Array.isArray(params)
-    ? null
-    : 'DAS routes require body shape: { "params": { ... } }.';
+    ? { params }
+    : { error: 'DAS routes require body shape: { "params": { ... } }.' };
+}
+
+async function extractRouteParams(
+  request: NextRequest,
+  resolvedRoute: ResolvedRoute,
+  rawPaymentHeader: string | undefined,
+): Promise<{ params: unknown; isDiscoveryProbe: boolean } | { error: string; status: number }> {
+  if (resolvedRoute.route.inputMode === "query") {
+    const { params, isEmpty } = extractQueryParams(request);
+    const isDiscoveryProbe = !rawPaymentHeader && isEmpty;
+    if (isDiscoveryProbe) {
+      return { params, isDiscoveryProbe: true };
+    }
+
+    const paramsError = validateRouteParams(resolvedRoute.route, params, resolvedRoute.pathParams);
+    if (paramsError) {
+      return { error: paramsError, status: 400 };
+    }
+
+    return { params, isDiscoveryProbe: false };
+  }
+
+  let parsedBody: ParsedRequestBody;
+  try {
+    parsedBody = await parseRequestBody(request);
+  } catch {
+    return { error: "Request body must be valid JSON.", status: 400 };
+  }
+
+  const isDiscoveryProbe = !rawPaymentHeader && parsedBody.isEmpty;
+  if (isDiscoveryProbe) {
+    return { params: {}, isDiscoveryProbe: true };
+  }
+
+  if (resolvedRoute.route.inputMode === "solana-envelope") {
+    const extracted = validateEnvelopeBody(resolvedRoute.route, parsedBody.body);
+    if ("error" in extracted) {
+      return { error: extracted.error, status: 400 };
+    }
+
+    const paramsError = validateRouteParams(resolvedRoute.route, extracted.params, resolvedRoute.pathParams);
+    if (paramsError) {
+      return { error: paramsError, status: 400 };
+    }
+
+    return { params: extracted.params, isDiscoveryProbe: false };
+  }
+
+  const paramsError = validateRouteParams(resolvedRoute.route, parsedBody.body, resolvedRoute.pathParams);
+  if (paramsError) {
+    return { error: paramsError, status: 400 };
+  }
+
+  return { params: parsedBody.body, isDiscoveryProbe: false };
+}
+
+function requestMethod(request: NextRequest): HttpMethod | null {
+  if (request.method === "GET" || request.method === "POST") {
+    return request.method;
+  }
+  return null;
+}
+
+function upstreamFailureResponse(error: unknown): { status: number; body: Record<string, unknown> } {
+  if (error instanceof UpstreamHttpError) {
+    if (error.exposeBody && error.body && typeof error.body === "object" && !Array.isArray(error.body)) {
+      return {
+        status: error.status,
+        body: {
+          ok: false,
+          ...(error.body as Record<string, unknown>),
+        },
+      };
+    }
+
+    return {
+      status: error.status,
+      body: {
+        ok: false,
+        error: "upstream_request_failed",
+      },
+    };
+  }
+
+  return {
+    status: 502,
+    body: {
+      ok: false,
+      error: "upstream_request_failed",
+    },
+  };
 }
 
 export async function handlePaidRouteRequest(request: NextRequest): Promise<NextResponse> {
   const runtime = await getGatewayRuntime();
   const requestId = randomUUID();
-  const route = runtime.routeMap.get(request.nextUrl.pathname);
+  const method = requestMethod(request);
+  if (!method) {
+    return NextResponse.json({ ok: false, error: "Method not allowed." }, { status: 405 });
+  }
 
-  if (!route) {
+  const resolvedRoute = resolveRoute(runtime.routes, method, request.nextUrl.pathname);
+  if (!resolvedRoute) {
     return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
   }
 
+  const route = resolvedRoute.route;
   const rawPaymentHeader = paymentHeader(request);
-
-  let body: unknown;
-  let isEmptyBody = false;
-  try {
-    const parsed = await parseRequestBody(request);
-    body = parsed.body;
-    isEmptyBody = parsed.isEmpty;
-  } catch {
-    return NextResponse.json({ ok: false, error: "Request body must be valid JSON." }, { status: 400 });
+  const extractedParams = await extractRouteParams(request, resolvedRoute, rawPaymentHeader);
+  if ("error" in extractedParams) {
+    return NextResponse.json({ ok: false, error: extractedParams.error }, { status: extractedParams.status });
   }
 
-  const isDiscoveryProbe = !rawPaymentHeader && isEmptyBody;
-  let params: unknown = undefined;
-  if (!isDiscoveryProbe) {
-    const bodyError = validateBodyForRoute(route, body);
-    if (bodyError) {
-      return NextResponse.json({ ok: false, error: bodyError }, { status: 400 });
-    }
-
-    params = (body as { params: unknown }).params;
-    const paramsError = validateRouteParams(route, params);
-    if (paramsError) {
-      return NextResponse.json({ ok: false, error: paramsError }, { status: 400 });
-    }
-  }
   if (!rawPaymentHeader) {
     const challengeLimit = await runtime.state.consumeRateLimit(
       `challenge:${requestIp(request)}`,
@@ -374,9 +494,9 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
   }
 
   const providerLimit = await runtime.state.consumeRateLimit(
-    `upstream:${route.provider}:${route.cluster}:${route.surface}`,
-    route.surface === "das" ? runtime.config.dasRateLimitPerSecond : runtime.config.rpcRateLimitPerSecond,
-    1_000,
+    `upstream:${route.rateLimitScope}`,
+    route.rateLimitLimit,
+    route.rateLimitWindowMs,
   );
 
   if (!providerLimit.allowed) {
@@ -406,32 +526,26 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
   let upstream;
   let upstreamLatencyMs = 0;
   try {
-    upstream = await forwardToUpstream(runtime.config, route, params);
+    upstream = await forwardToUpstream(runtime.config, resolvedRoute, extractedParams.params);
     upstreamLatencyMs = Date.now() - upstreamStartedAt;
   } catch (error) {
     upstreamLatencyMs = Date.now() - upstreamStartedAt;
     await runtime.state.releaseReplay(replayKey);
+    const failureResponse = upstreamFailureResponse(error);
+
     await recordEvent(runtime.state, {
       event: "upstream_request_failed",
       timestamp: new Date().toISOString(),
       requestId,
       ...eventBase(runtime.config, route),
       upstreamLatencyMs,
-      httpStatus: 502,
+      httpStatus: failureResponse.status,
       detail: {
         error: error instanceof Error ? error.message : "upstream_failed",
       },
     }, "upstream_request_failed");
 
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "upstream_request_failed",
-      },
-      {
-        status: 502,
-      },
-    );
+    return NextResponse.json(failureResponse.body, { status: failureResponse.status });
   }
 
   await recordEvent(runtime.state, {
@@ -493,7 +607,7 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
     wallet: settlement.payer,
     upstreamLatencyMs,
     httpStatus: 200,
-  }, `usage:${route.provider}:${route.cluster}:${route.surface}:${route.method}`);
+  }, `usage:${route.provider}:${route.cluster ?? "none"}:${route.surface}:${route.method}`);
 
   return NextResponse.json(
     {
@@ -502,7 +616,7 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
       cluster: route.cluster,
       surface: route.surface,
       method: route.method,
-      priceUsd: runtime.config.priceUsd,
+      priceUsd: route.priceUsd,
       paymentNetwork: runtime.config.paymentNetwork,
       result: upstream.result,
     },
@@ -520,7 +634,6 @@ export async function requireInternalAuth(request: NextRequest): Promise<NextRes
   }
 
   const header = request.headers.get("x-agon-internal-secret");
-
   if (header !== config.internalSettlementSecret) {
     return NextResponse.json({ ok: false, error: "Forbidden." }, { status: 403 });
   }
@@ -535,7 +648,8 @@ export async function handleFacilitatorSupportedRequest(): Promise<NextResponse>
 
 export async function handleFacilitatorVerifyRequest(request: NextRequest): Promise<NextResponse> {
   const { facilitator } = await getFacilitatorRuntime();
-  const body = await parseRequestBody(request) as Record<string, unknown>;
+  const parsedBody = await parseRequestBody(request);
+  const body = parsedBody.body as Record<string, unknown>;
   const verification = await facilitator.verify(
     body.paymentPayload as Parameters<typeof facilitator.verify>[0],
     body.paymentRequirements as Parameters<typeof facilitator.verify>[1],
@@ -546,7 +660,8 @@ export async function handleFacilitatorVerifyRequest(request: NextRequest): Prom
 
 export async function handleFacilitatorSettleRequest(request: NextRequest): Promise<NextResponse> {
   const { facilitator } = await getFacilitatorRuntime();
-  const body = await parseRequestBody(request) as Record<string, unknown>;
+  const parsedBody = await parseRequestBody(request);
+  const body = parsedBody.body as Record<string, unknown>;
   const settlement = await facilitator.settle(
     body.paymentPayload as Parameters<typeof facilitator.settle>[0],
     body.paymentRequirements as Parameters<typeof facilitator.settle>[1],

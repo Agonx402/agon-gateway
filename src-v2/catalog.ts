@@ -1,14 +1,17 @@
+import { buildTokensRouteCatalog, validateTokensRouteParams } from "./tokens-routes";
 import type {
   CatalogRouteEntry,
   ClusterName,
   GatewayConfig,
+  HttpMethod,
   ProviderName,
+  ResolvedRoute,
   RouteSpec,
   SurfaceName,
 } from "./types";
 
 const CLUSTERS: ClusterName[] = ["mainnet", "devnet"];
-const PROVIDERS: ProviderName[] = ["alchemy", "helius"];
+const PROVIDERS: Exclude<ProviderName, "tokens">[] = ["alchemy", "helius"];
 
 const RPC_METHODS: Array<{ method: string; description: string }> = [
   { method: "getBalance", description: "Fetch the lamport balance for an account." },
@@ -30,10 +33,7 @@ const MAX_PROGRAM_ACCOUNT_FILTERS = 4;
 const MAX_DATA_SLICE_BYTES = 256;
 const MAX_MEMCMP_BYTES_LENGTH = 128;
 
-function isRouteSupported(cluster: ClusterName, provider: ProviderName, surface: SurfaceName): boolean {
-  // Alchemy documents Solana DAS against the mainnet endpoint only.
-  // Keeping undocumented devnet DAS routes out of the catalog avoids selling
-  // routes that currently fail upstream in production.
+function isRouteSupported(cluster: ClusterName, provider: Exclude<ProviderName, "tokens">, surface: SurfaceName): boolean {
   if (provider === "alchemy" && cluster === "devnet" && surface === "das") {
     return false;
   }
@@ -259,7 +259,7 @@ function validateDasParams(method: string, params: unknown): string | null {
   }
 }
 
-function buildInputSchema(surface: SurfaceName) {
+function buildSolanaInputSchema(surface: Extract<SurfaceName, "rpc" | "das">) {
   if (surface === "rpc") {
     return {
       type: "object",
@@ -303,57 +303,71 @@ function buildOutputSchema() {
   };
 }
 
-function buildRouteSpec(
+function buildSolanaRouteSpec(
+  config: GatewayConfig,
   cluster: ClusterName,
-  provider: ProviderName,
-  surface: SurfaceName,
+  provider: Exclude<ProviderName, "tokens">,
+  surface: Extract<SurfaceName, "rpc" | "das">,
   method: string,
   description: string,
 ): RouteSpec {
   return {
     path: `/v1/x402/solana/${cluster}/${provider}/${surface}/${method}`,
+    httpMethod: "POST",
+    kind: surface === "rpc" ? "solana-rpc" : "solana-das",
     cluster,
     provider,
     surface,
     method,
     description,
-    paramsShape: surface === "rpc" ? "array" : "object",
-    inputSchema: buildInputSchema(surface),
+    inputMode: "solana-envelope",
+    inputSchema: buildSolanaInputSchema(surface),
+    inputExample: {
+      params: surface === "rpc" ? [] : {},
+    },
     outputSchema: buildOutputSchema(),
+    priceUsd: config.priceUsd,
+    upstreamPath: "",
+    requiresUpstreamAuth: false,
+    rateLimitScope: `${provider}:${cluster}:${surface}`,
+    rateLimitLimit: surface === "das" ? config.dasRateLimitPerSecond : config.rpcRateLimitPerSecond,
+    rateLimitWindowMs: 1_000,
   };
 }
 
-export function buildRouteCatalog(): RouteSpec[] {
+export function buildRouteCatalog(config: GatewayConfig): RouteSpec[] {
   const routes: RouteSpec[] = [];
 
   for (const cluster of CLUSTERS) {
     for (const provider of PROVIDERS) {
       for (const rpc of RPC_METHODS) {
         if (isRouteSupported(cluster, provider, "rpc")) {
-          routes.push(buildRouteSpec(cluster, provider, "rpc", rpc.method, rpc.description));
+          routes.push(buildSolanaRouteSpec(config, cluster, provider, "rpc", rpc.method, rpc.description));
         }
       }
 
       for (const das of DAS_METHODS) {
         if (isRouteSupported(cluster, provider, "das")) {
-          routes.push(buildRouteSpec(cluster, provider, "das", das.method, das.description));
+          routes.push(buildSolanaRouteSpec(config, cluster, provider, "das", das.method, das.description));
         }
       }
     }
   }
 
+  routes.push(...buildTokensRouteCatalog(config));
   return routes;
 }
 
 export function buildCatalogEntries(config: GatewayConfig, routes: RouteSpec[]): CatalogRouteEntry[] {
   return routes.map((route) => ({
     path: route.path,
+    httpMethod: route.httpMethod,
     cluster: route.cluster,
     provider: route.provider,
     surface: route.surface,
     method: route.method,
     description: route.description,
-    priceUsd: config.priceUsd,
+    priceUsd: route.priceUsd,
     paymentNetwork: config.paymentNetwork,
     paymentAsset: {
       symbol: config.paymentAssetSymbol,
@@ -363,15 +377,77 @@ export function buildCatalogEntries(config: GatewayConfig, routes: RouteSpec[]):
     enabled: true,
     inputSchema: route.inputSchema,
     outputSchema: route.outputSchema,
+    pathParamsSchema: route.pathParamsSchema,
   }));
 }
 
-export function routeCatalogMap(routes: RouteSpec[]): Map<string, RouteSpec> {
-  return new Map(routes.map((route) => [route.path, route]));
+function matchRoutePath(template: string, pathname: string): { score: number; pathParams: Record<string, string> } | null {
+  const templateSegments = template.split("/").filter(Boolean);
+  const pathSegments = pathname.split("/").filter(Boolean);
+  if (templateSegments.length !== pathSegments.length) {
+    return null;
+  }
+
+  const pathParams: Record<string, string> = {};
+  let score = 0;
+
+  for (let index = 0; index < templateSegments.length; index += 1) {
+    const templateSegment = templateSegments[index]!;
+    const pathSegment = pathSegments[index]!;
+
+    if (templateSegment.startsWith(":")) {
+      pathParams[templateSegment.slice(1)] = decodeURIComponent(pathSegment);
+      continue;
+    }
+
+    if (templateSegment !== pathSegment) {
+      return null;
+    }
+
+    score += 1;
+  }
+
+  return { score, pathParams };
 }
 
-export function validateRouteParams(route: RouteSpec, params: unknown): string | null {
-  return route.surface === "rpc"
-    ? validateRpcParams(route.method, params)
-    : validateDasParams(route.method, params);
+export function resolveRoute(routes: RouteSpec[], method: HttpMethod, pathname: string): ResolvedRoute | null {
+  let bestMatch: ResolvedRoute | null = null;
+  let bestScore = -1;
+
+  for (const route of routes) {
+    if (route.httpMethod !== method) {
+      continue;
+    }
+
+    const matched = matchRoutePath(route.path, pathname);
+    if (!matched || matched.score < bestScore) {
+      continue;
+    }
+
+    bestScore = matched.score;
+    bestMatch = {
+      route,
+      pathParams: matched.pathParams,
+    };
+  }
+
+  return bestMatch;
+}
+
+export function validateRouteParams(
+  route: RouteSpec,
+  params: unknown,
+  pathParams: Record<string, string>,
+): string | null {
+  switch (route.kind) {
+    case "solana-rpc":
+      return validateRpcParams(route.method, params);
+    case "solana-das":
+      return validateDasParams(route.method, params);
+    case "tokens-query":
+    case "tokens-body":
+      return validateTokensRouteParams(route, params, pathParams);
+    default:
+      return "Unsupported route kind.";
+  }
 }
