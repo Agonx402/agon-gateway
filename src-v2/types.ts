@@ -1,7 +1,7 @@
 export type ProviderName = "alchemy" | "helius" | "tokens";
 export type ClusterName = "mainnet" | "devnet";
 export type SurfaceName = "rpc" | "das" | "tokens";
-export type HttpMethod = "GET" | "POST";
+export type HttpMethod = "GET" | "POST" | "HEAD";
 export type RouteInputMode = "solana-envelope" | "query" | "json-body";
 export type RouteKind = "solana-rpc" | "solana-das" | "tokens-query" | "tokens-body";
 export type RouteAccessMode = "exact" | "siwx";
@@ -9,6 +9,7 @@ export type RouteAccessMode = "exact" | "siwx";
 export interface RouteSpec {
   path: string;
   httpMethod: HttpMethod;
+  alternateMethods?: HttpMethod[];
   kind: RouteKind;
   accessMode: RouteAccessMode;
   paymentRequired: boolean;

@@ -314,6 +314,7 @@ function buildSolanaRouteSpec(
   return {
     path: `/v1/x402/solana/${cluster}/${provider}/${surface}/${method}`,
     httpMethod: "POST",
+    alternateMethods: ["GET", "HEAD"],
     kind: surface === "rpc" ? "solana-rpc" : "solana-das",
     accessMode: "exact",
     paymentRequired: true,
@@ -424,10 +425,30 @@ export function resolveRoute(routes: RouteSpec[], method: HttpMethod, pathname: 
   let bestScore = -1;
 
   for (const route of routes) {
-    if (route.httpMethod !== method) {
+    if (route.httpMethod !== method && !route.alternateMethods?.includes(method)) {
       continue;
     }
 
+    const matched = matchRoutePath(route.path, pathname);
+    if (!matched || matched.score < bestScore) {
+      continue;
+    }
+
+    bestScore = matched.score;
+    bestMatch = {
+      route,
+      pathParams: matched.pathParams,
+    };
+  }
+
+  return bestMatch;
+}
+
+export function resolveRouteByPath(routes: RouteSpec[], pathname: string): ResolvedRoute | null {
+  let bestMatch: ResolvedRoute | null = null;
+  let bestScore = -1;
+
+  for (const route of routes) {
     const matched = matchRoutePath(route.path, pathname);
     if (!matched || matched.score < bestScore) {
       continue;

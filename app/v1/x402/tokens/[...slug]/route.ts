@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { handlePaidRouteRequest } from "../../../../../src-v2/x402-runtime";
+import { handlePaidRouteOptionsRequest, handlePaidRouteRequest } from "../../../../../src-v2/x402-runtime";
 
 export const runtime = "nodejs";
 export const preferredRegion = "iad1";
@@ -11,4 +11,12 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   return handlePaidRouteRequest(request);
+}
+
+export async function HEAD(request: NextRequest) {
+  return handlePaidRouteRequest(request);
+}
+
+export async function OPTIONS(request: NextRequest) {
+  return handlePaidRouteOptionsRequest(request);
 }

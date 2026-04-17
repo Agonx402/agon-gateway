@@ -21,7 +21,7 @@ import { SOLANA_MAINNET_CAIP2, toFacilitatorSvmSigner } from "@x402/svm";
 import { registerExactSvmScheme as registerExactSvmFacilitatorScheme } from "@x402/svm/exact/facilitator";
 import { registerExactSvmScheme as registerExactSvmServerScheme } from "@x402/svm/exact/server";
 import { NextRequest, NextResponse } from "next/server";
-import { buildCatalogEntries, buildRouteCatalog, resolveRoute, validateRouteParams } from "./catalog";
+import { buildCatalogEntries, buildRouteCatalog, resolveRoute, resolveRouteByPath, validateRouteParams } from "./catalog";
 import { loadConfig } from "./config";
 import { loadFacilitatorSigner } from "./facilitator-wallet";
 import { HostedGatewayState } from "./hosted-state";
@@ -55,6 +55,11 @@ interface ParsedRequestBody {
   isEmpty: boolean;
 }
 
+interface ParsedSolanaQueryParams {
+  params: unknown;
+  isEmpty: boolean;
+}
+
 let runtimePromise: Promise<GatewayRuntime> | null = null;
 let facilitatorRuntimePromise: Promise<FacilitatorRuntime> | null = null;
 
@@ -63,6 +68,23 @@ const PROVIDER_LABELS: Record<CatalogRouteEntry["provider"], string> = {
   helius: "Helius",
   tokens: "TokensAPI",
 };
+
+const ACCESS_CONTROL_ALLOW_HEADERS = [
+  "Content-Type",
+  "PAYMENT-SIGNATURE",
+  "X-PAYMENT",
+  "X-PAYMENT-RESPONSE",
+  "PAYMENT-RESPONSE",
+  "SIGN-IN-WITH-X",
+  "Authorization",
+].join(", ");
+
+const ACCESS_CONTROL_EXPOSE_HEADERS = [
+  "Content-Type",
+  "WWW-Authenticate",
+  "X-PAYMENT-RESPONSE",
+  "PAYMENT-RESPONSE",
+].join(", ");
 
 function buildDiscoveryExtension(config: GatewayConfig, route: RouteSpec) {
   const outputExample: Record<string, unknown> = {
@@ -209,6 +231,35 @@ function responseFromInstructions(response: HTTPResponseInstructions): NextRespo
   });
 }
 
+function allowedMethodsForRoute(route: RouteSpec): string[] {
+  return Array.from(new Set([route.httpMethod, ...(route.alternateMethods ?? []), "OPTIONS"]));
+}
+
+function applyCorsHeaders(response: NextResponse, methods: string[]): NextResponse {
+  response.headers.set("access-control-allow-origin", "*");
+  response.headers.set("access-control-allow-methods", methods.join(", "));
+  response.headers.set("access-control-allow-headers", ACCESS_CONTROL_ALLOW_HEADERS);
+  response.headers.set("access-control-expose-headers", ACCESS_CONTROL_EXPOSE_HEADERS);
+  response.headers.set("access-control-max-age", "86400");
+  response.headers.set("allow", methods.join(", "));
+  return response;
+}
+
+function finalizePublicResponse(
+  response: NextResponse,
+  methods: string[],
+  stripBody = false,
+): NextResponse {
+  const baseResponse = stripBody
+    ? new NextResponse(null, {
+      status: response.status,
+      headers: new Headers(response.headers),
+    })
+    : response;
+
+  return applyCorsHeaders(baseResponse, methods);
+}
+
 function eventBase(config: GatewayConfig, route?: RouteSpec): Omit<EventRecord, "event" | "timestamp" | "requestId"> {
   if (!route) {
     return {};
@@ -351,14 +402,14 @@ export async function handleCatalogRequest(request?: NextRequest): Promise<NextR
   const providerFilter = normalizeProviderFilter(rawProviderFilter);
 
   if (rawProviderFilter && !providerFilter) {
-    return NextResponse.json(
+    return finalizePublicResponse(NextResponse.json(
       {
         ok: false,
         error: "invalid_provider_filter",
         supportedProviders: Object.keys(PROVIDER_LABELS),
       },
       { status: 400 },
-    );
+    ), ["GET", "HEAD", "OPTIONS"], request?.method === "HEAD");
   }
 
   const routes = providerFilter
@@ -366,7 +417,7 @@ export async function handleCatalogRequest(request?: NextRequest): Promise<NextR
     : runtime.catalog;
   const categories = buildProviderCategories(runtime.catalog, runtime.config.baseUrl);
 
-  return NextResponse.json({
+  return finalizePublicResponse(NextResponse.json({
     ok: true,
     version: 1,
     payment: {
@@ -390,15 +441,19 @@ export async function handleCatalogRequest(request?: NextRequest): Promise<NextR
       providers: categories,
     },
     routes,
-  });
+  }), ["GET", "HEAD", "OPTIONS"], request?.method === "HEAD");
 }
 
-export function handleHealthRequest(): NextResponse {
-  return NextResponse.json({
+export function handleHealthRequest(request?: NextRequest): NextResponse {
+  return finalizePublicResponse(NextResponse.json({
     ok: true,
     service: "agon-gateway",
     status: "healthy",
-  });
+  }), ["GET", "HEAD", "OPTIONS"], request?.method === "HEAD");
+}
+
+export function handleOptionsRequest(methods: string[]): NextResponse {
+  return finalizePublicResponse(new NextResponse(null, { status: 204 }), methods);
 }
 
 async function parseRequestBody(request: NextRequest): Promise<ParsedRequestBody> {
@@ -425,6 +480,99 @@ function extractQueryParams(request: NextRequest): { params: URLSearchParams; is
   };
 }
 
+function coerceQueryValue(value: string): unknown {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return "";
+  }
+
+  if (/^-?\d+$/.test(trimmed)) {
+    const asNumber = Number(trimmed);
+    if (Number.isSafeInteger(asNumber)) {
+      return asNumber;
+    }
+  }
+
+  if (trimmed === "true") {
+    return true;
+  }
+
+  if (trimmed === "false") {
+    return false;
+  }
+
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}"))
+    || (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    || (trimmed.startsWith("\"") && trimmed.endsWith("\""))
+  ) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return trimmed;
+    }
+  }
+
+  return trimmed;
+}
+
+function extractSolanaQueryParams(
+  request: NextRequest,
+  route: RouteSpec,
+): ParsedSolanaQueryParams | { error: string } {
+  const { params: searchParams, isEmpty } = extractQueryParams(request);
+  if (isEmpty) {
+    return {
+      params: route.kind === "solana-rpc" ? [] : {},
+      isEmpty: true,
+    };
+  }
+
+  const rawParamsValues = searchParams.getAll("params");
+  if (rawParamsValues.length > 1) {
+    return { error: 'Query param "params" may be provided at most once.' };
+  }
+
+  if (rawParamsValues.length === 1) {
+    try {
+      return {
+        params: JSON.parse(rawParamsValues[0]!),
+        isEmpty: false,
+      };
+    } catch {
+      return { error: 'Query param "params" must be valid JSON.' };
+    }
+  }
+
+  if (route.kind === "solana-rpc") {
+    return {
+      error: 'RPC GET requests require query param "params" containing a JSON array.',
+    };
+  }
+
+  const paramsObject: Record<string, unknown> = {};
+  const groupedValues = new Map<string, string[]>();
+  for (const [key, value] of searchParams.entries()) {
+    const existing = groupedValues.get(key);
+    if (existing) {
+      existing.push(value);
+    } else {
+      groupedValues.set(key, [value]);
+    }
+  }
+
+  for (const [key, values] of groupedValues.entries()) {
+    paramsObject[key] = values.length === 1
+      ? coerceQueryValue(values[0]!)
+      : values.map((value) => coerceQueryValue(value));
+  }
+
+  return {
+    params: paramsObject,
+    isEmpty: false,
+  };
+}
+
 function validateEnvelopeBody(route: RouteSpec, body: unknown): { params: unknown } | { error: string } {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { error: "Request body must be a JSON object." };
@@ -445,11 +593,11 @@ function validateEnvelopeBody(route: RouteSpec, body: unknown): { params: unknow
 async function extractRouteParams(
   request: NextRequest,
   resolvedRoute: ResolvedRoute,
-  rawPaymentHeader: string | undefined,
+  hasAccessHeader: boolean,
 ): Promise<{ params: unknown; isDiscoveryProbe: boolean } | { error: string; status: number }> {
   if (resolvedRoute.route.inputMode === "query") {
     const { params, isEmpty } = extractQueryParams(request);
-    const isDiscoveryProbe = !rawPaymentHeader && isEmpty;
+    const isDiscoveryProbe = !hasAccessHeader && isEmpty;
     if (isDiscoveryProbe) {
       return { params, isDiscoveryProbe: true };
     }
@@ -462,6 +610,28 @@ async function extractRouteParams(
     return { params, isDiscoveryProbe: false };
   }
 
+  if (
+    resolvedRoute.route.inputMode === "solana-envelope"
+    && (request.method === "GET" || request.method === "HEAD")
+  ) {
+    const extracted = extractSolanaQueryParams(request, resolvedRoute.route);
+    if ("error" in extracted) {
+      return { error: extracted.error, status: 400 };
+    }
+
+    const isDiscoveryProbe = !hasAccessHeader && extracted.isEmpty;
+    if (isDiscoveryProbe) {
+      return { params: extracted.params, isDiscoveryProbe: true };
+    }
+
+    const paramsError = validateRouteParams(resolvedRoute.route, extracted.params, resolvedRoute.pathParams);
+    if (paramsError) {
+      return { error: paramsError, status: 400 };
+    }
+
+    return { params: extracted.params, isDiscoveryProbe: false };
+  }
+
   let parsedBody: ParsedRequestBody;
   try {
     parsedBody = await parseRequestBody(request);
@@ -469,7 +639,7 @@ async function extractRouteParams(
     return { error: "Request body must be valid JSON.", status: 400 };
   }
 
-  const isDiscoveryProbe = !rawPaymentHeader && parsedBody.isEmpty;
+  const isDiscoveryProbe = !hasAccessHeader && parsedBody.isEmpty;
   if (isDiscoveryProbe) {
     return { params: {}, isDiscoveryProbe: true };
   }
@@ -497,7 +667,7 @@ async function extractRouteParams(
 }
 
 function requestMethod(request: NextRequest): HttpMethod | null {
-  if (request.method === "GET" || request.method === "POST") {
+  if (request.method === "GET" || request.method === "POST" || request.method === "HEAD") {
     return request.method;
   }
   return null;
@@ -623,22 +793,37 @@ async function handleGrantedRouteRequest(
 export async function handlePaidRouteRequest(request: NextRequest): Promise<NextResponse> {
   const runtime = await getGatewayRuntime();
   const requestId = randomUUID();
-  const method = requestMethod(request);
-  if (!method) {
-    return NextResponse.json({ ok: false, error: "Method not allowed." }, { status: 405 });
+  const requestedMethod = requestMethod(request);
+  if (!requestedMethod) {
+    const matchedRoute = resolveRouteByPath(runtime.routes, request.nextUrl.pathname);
+    const methods = matchedRoute ? allowedMethodsForRoute(matchedRoute.route) : ["OPTIONS"];
+    return finalizePublicResponse(
+      NextResponse.json({ ok: false, error: "Method not allowed." }, { status: 405 }),
+      methods,
+      request.method === "HEAD",
+    );
   }
 
-  const resolvedRoute = resolveRoute(runtime.routes, method, request.nextUrl.pathname);
+  const resolvedRoute = resolveRoute(runtime.routes, requestedMethod, request.nextUrl.pathname);
   if (!resolvedRoute) {
-    return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
+    return finalizePublicResponse(
+      NextResponse.json({ ok: false, error: "Not found." }, { status: 404 }),
+      ["OPTIONS"],
+      request.method === "HEAD",
+    );
   }
 
   const route = resolvedRoute.route;
+  const allowedMethods = allowedMethodsForRoute(route);
   const rawPaymentHeader = paymentHeader(request);
   const rawSiwxHeader = siwxHeader(request);
-  const extractedParams = await extractRouteParams(request, resolvedRoute, rawPaymentHeader);
+  const extractedParams = await extractRouteParams(request, resolvedRoute, Boolean(rawPaymentHeader || rawSiwxHeader));
   if ("error" in extractedParams) {
-    return NextResponse.json({ ok: false, error: extractedParams.error }, { status: extractedParams.status });
+    return finalizePublicResponse(
+      NextResponse.json({ ok: false, error: extractedParams.error }, { status: extractedParams.status }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
   }
 
   if (!rawPaymentHeader && !rawSiwxHeader) {
@@ -649,10 +834,10 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
     );
 
     if (!challengeLimit.allowed) {
-      return NextResponse.json(
+      return finalizePublicResponse(NextResponse.json(
         { ok: false, error: "rate_limited", reason: "challenge_rate_limit" },
         { status: 429, headers: { "retry-after": String(challengeLimit.retryAfterSeconds) } },
-      );
+      ), allowedMethods, requestedMethod === "HEAD");
     }
   } else if (rawPaymentHeader) {
     await recordEvent(runtime.state, {
@@ -676,7 +861,7 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
   const httpContext = {
     adapter,
     path: request.nextUrl.pathname,
-    method: request.method,
+    method: route.httpMethod,
     paymentHeader: rawPaymentHeader,
   };
 
@@ -694,7 +879,11 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
         error: error instanceof Error ? error.message : "payment_processing_failed",
       },
     }, "request_failed");
-    return NextResponse.json({ ok: false, error: "Internal server error." }, { status: 500 });
+    return finalizePublicResponse(
+      NextResponse.json({ ok: false, error: "Internal server error." }, { status: 500 }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
   }
 
   if (processResult.type === "no-payment-required") {
@@ -705,7 +894,8 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
       ...eventBase(runtime.config, route),
       httpStatus: 200,
     }, route.accessMode === "siwx" ? "auth_verified" : "access_granted");
-    return handleGrantedRouteRequest(runtime, resolvedRoute, requestId, extractedParams.params);
+    const grantedResponse = await handleGrantedRouteRequest(runtime, resolvedRoute, requestId, extractedParams.params);
+    return finalizePublicResponse(grantedResponse, allowedMethods, requestedMethod === "HEAD");
   }
 
   if (processResult.type === "payment-error") {
@@ -727,16 +917,20 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
           ? { reason: "authentication_failed" }
           : undefined,
     }, event);
-    return responseFromInstructions(processResult.response);
+    return finalizePublicResponse(
+      responseFromInstructions(processResult.response),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
   }
 
   const replayKey = createHash("sha256").update(rawPaymentHeader ?? requestId).digest("hex");
   const replayReservation = await runtime.state.reserveReplay(replayKey);
   if (!replayReservation.ok) {
-    return NextResponse.json(
+    return finalizePublicResponse(NextResponse.json(
       { ok: false, error: "payment_already_used", state: replayReservation.state },
       { status: 409 },
-    );
+    ), allowedMethods, requestedMethod === "HEAD");
   }
 
   const providerLimit = await runtime.state.consumeRateLimit(
@@ -747,10 +941,10 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
 
   if (!providerLimit.allowed) {
     await runtime.state.releaseReplay(replayKey);
-    return NextResponse.json(
+    return finalizePublicResponse(NextResponse.json(
       { ok: false, error: "rate_limited", reason: "provider_rate_limit" },
       { status: 429, headers: { "retry-after": String(providerLimit.retryAfterSeconds) } },
-    );
+    ), allowedMethods, requestedMethod === "HEAD");
   }
 
   await recordEvent(runtime.state, {
@@ -791,7 +985,11 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
       },
     }, "upstream_request_failed");
 
-    return NextResponse.json(failureResponse.body, { status: failureResponse.status });
+    return finalizePublicResponse(
+      NextResponse.json(failureResponse.body, { status: failureResponse.status }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
   }
 
   await recordEvent(runtime.state, {
@@ -829,7 +1027,11 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
         error: settlement.errorReason,
       },
     }, "payment_settle_failed");
-    return responseFromInstructions(settlement.response);
+    return finalizePublicResponse(
+      responseFromInstructions(settlement.response),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
   }
 
   await runtime.state.markReplaySettled(replayKey);
@@ -855,7 +1057,7 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
     httpStatus: 200,
   }, `usage:${route.provider}:${route.cluster ?? "none"}:${route.surface}:${route.method}`);
 
-  return NextResponse.json(
+  return finalizePublicResponse(NextResponse.json(
     {
       ok: true,
       provider: route.provider,
@@ -870,6 +1072,22 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
       status: 200,
       headers: settlement.headers,
     },
+  ), allowedMethods, requestedMethod === "HEAD");
+}
+
+export async function handlePaidRouteOptionsRequest(request: NextRequest): Promise<NextResponse> {
+  const runtime = await getGatewayRuntime();
+  const resolvedRoute = resolveRouteByPath(runtime.routes, request.nextUrl.pathname);
+  if (!resolvedRoute) {
+    return finalizePublicResponse(
+      NextResponse.json({ ok: false, error: "Not found." }, { status: 404 }),
+      ["OPTIONS"],
+    );
+  }
+
+  return finalizePublicResponse(
+    new NextResponse(null, { status: 204 }),
+    allowedMethodsForRoute(resolvedRoute.route),
   );
 }
 

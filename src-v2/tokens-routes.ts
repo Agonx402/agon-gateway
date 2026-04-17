@@ -84,6 +84,7 @@ function buildTokensQueryRoute(
   return {
     path: options.path,
     httpMethod: "GET",
+    alternateMethods: ["HEAD"],
     kind: "tokens-query",
     accessMode: "siwx",
     paymentRequired: false,
@@ -120,6 +121,7 @@ function buildTokensBodyRoute(
   return {
     path: options.path,
     httpMethod: "POST",
+    alternateMethods: ["HEAD"],
     kind: "tokens-body",
     accessMode: "siwx",
     paymentRequired: false,
