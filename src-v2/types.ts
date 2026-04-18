@@ -145,8 +145,6 @@ export interface GatewayConfig {
   internalSettlementSecret?: string;
   payToWallet: string;
   usdcMint: string;
-  priceUsd: string;
-  priceAtomic: bigint;
   paymentNetwork: string;
   paymentAssetSymbol: string;
   paymentAssetDecimals: number;

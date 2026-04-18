@@ -118,7 +118,9 @@ Current payment rail:
 
 - network: `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`
 - asset: mainnet USDC
-- Solana RPC / DAS price: `$0.01` per call
+- Solana RPC / DAS routes are priced per endpoint from the upstream provider's published PAYG schedule
+- Alchemy routes use current Compute Unit pricing, rounded up to the nearest USDC micro when needed
+- Helius routes use current per-credit pricing
 - Tokens API routes: no payment, wallet-authenticated via SIWX
 
 Bazaar discovery note:
@@ -160,8 +162,6 @@ Copy `.env.example` and set:
 - `CDP_API_KEY_SECRET`
 - `AGON_X402_PAY_TO_WALLET`
 - `AGON_X402_USDC_MINT`
-- `AGON_X402_PRICE_USD`
-- `AGON_X402_PRICE_ATOMIC`
 - `SOLANA_MAINNET_RPC_URL`
 - `ALCHEMY_MAINNET_RPC_URL`
 - `ALCHEMY_DEVNET_RPC_URL`

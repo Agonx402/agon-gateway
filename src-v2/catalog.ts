@@ -28,10 +28,95 @@ const DAS_METHODS: Array<{ method: string; description: string }> = [
   { method: "searchAssets", description: "Search digital assets with DAS filters." },
 ];
 
+// Pricing sources, checked against official provider docs on 2026-04-18:
+// - Alchemy Solana PAYG: $0.45 / 1M CU
+// - Helius additional credits: $5 / 1M credits
+const USD_MICRO_UNITS = 1_000_000;
+const ALCHEMY_USD_MICROS_PER_MILLION_CU = 450_000;
+const HELIUS_USD_MICROS_PER_MILLION_CREDITS = 5_000_000;
+
+const ALCHEMY_RPC_CU_BY_METHOD: Record<string, number> = {
+  getBalance: 10,
+  getAccountInfo: 10,
+  getTransaction: 40,
+  getSignaturesForAddress: 40,
+  getTokenAccountsByOwner: 10,
+  getProgramAccounts: 20,
+};
+
+const ALCHEMY_DAS_CU_BY_METHOD: Record<string, number> = {
+  getAsset: 80,
+  getAssetsByOwner: 480,
+  searchAssets: 480,
+};
+
+const HELIUS_RPC_CREDITS_BY_METHOD: Record<string, number> = {
+  getBalance: 1,
+  getAccountInfo: 1,
+  getTransaction: 1,
+  getSignaturesForAddress: 1,
+  getTokenAccountsByOwner: 1,
+  getProgramAccounts: 10,
+};
+
+const HELIUS_DAS_CREDITS_BY_METHOD: Record<string, number> = {
+  getAsset: 10,
+  getAssetsByOwner: 10,
+  searchAssets: 10,
+};
+
 const MAX_LIST_LIMIT = 100;
 const MAX_PROGRAM_ACCOUNT_FILTERS = 4;
 const MAX_DATA_SLICE_BYTES = 256;
 const MAX_MEMCMP_BYTES_LENGTH = 128;
+
+function formatUsdMicros(micros: number): string {
+  const whole = Math.floor(micros / USD_MICRO_UNITS);
+  const fractional = String(micros % USD_MICRO_UNITS).padStart(6, "0").replace(/0+$/, "");
+  return fractional.length > 0 ? `${whole}.${fractional}` : `${whole}`;
+}
+
+function ceilDiv(numerator: number, denominator: number): number {
+  return Math.floor((numerator + denominator - 1) / denominator);
+}
+
+function alchemyPriceUsd(cu: number): string {
+  const micros = ceilDiv(cu * ALCHEMY_USD_MICROS_PER_MILLION_CU, 1_000_000);
+  return formatUsdMicros(micros);
+}
+
+function heliusPriceUsd(credits: number): string {
+  const micros = ceilDiv(credits * HELIUS_USD_MICROS_PER_MILLION_CREDITS, 1_000_000);
+  return formatUsdMicros(micros);
+}
+
+function getSolanaRoutePriceUsd(
+  provider: Exclude<ProviderName, "tokens">,
+  surface: Extract<SurfaceName, "rpc" | "das">,
+  method: string,
+): string {
+  if (provider === "alchemy") {
+    const cu = surface === "rpc"
+      ? ALCHEMY_RPC_CU_BY_METHOD[method]
+      : ALCHEMY_DAS_CU_BY_METHOD[method];
+
+    if (!cu) {
+      throw new Error(`Missing Alchemy price mapping for ${surface}:${method}`);
+    }
+
+    return alchemyPriceUsd(cu);
+  }
+
+  const credits = surface === "rpc"
+    ? HELIUS_RPC_CREDITS_BY_METHOD[method]
+    : HELIUS_DAS_CREDITS_BY_METHOD[method];
+
+  if (!credits) {
+    throw new Error(`Missing Helius price mapping for ${surface}:${method}`);
+  }
+
+  return heliusPriceUsd(credits);
+}
 
 function isRouteSupported(cluster: ClusterName, provider: Exclude<ProviderName, "tokens">, surface: SurfaceName): boolean {
   if (provider === "alchemy" && cluster === "devnet" && surface === "das") {
@@ -329,7 +414,7 @@ function buildSolanaRouteSpec(
       params: surface === "rpc" ? [] : {},
     },
     outputSchema: buildOutputSchema(),
-    priceUsd: config.priceUsd,
+    priceUsd: getSolanaRoutePriceUsd(provider, surface, method),
     upstreamPath: "",
     requiresUpstreamAuth: false,
     rateLimitScope: `${provider}:${cluster}:${surface}`,

@@ -40,19 +40,6 @@ function readNumber(name: string, fallback?: string): number {
   return parsed;
 }
 
-function readBigInt(name: string, fallback?: string): bigint {
-  const raw = readString(name, fallback);
-  try {
-    const parsed = BigInt(raw);
-    if (parsed <= 0n) {
-      throw new Error("non-positive");
-    }
-    return parsed;
-  } catch {
-    throw new Error(`Environment variable ${name} must be a positive integer string.`);
-  }
-}
-
 export function loadConfig(): GatewayConfig {
   const vercelUrl = readOptionalString("VERCEL_URL");
   const baseUrlFallback = vercelUrl ? `https://${vercelUrl}` : "http://localhost:8080";
@@ -66,8 +53,6 @@ export function loadConfig(): GatewayConfig {
     internalSettlementSecret: readOptionalString("AGON_INTERNAL_SETTLEMENT_SECRET"),
     payToWallet: readString("AGON_X402_PAY_TO_WALLET", process.env.AGON_GATEWAY_PAYEE_WALLET),
     usdcMint: readString("AGON_X402_USDC_MINT", MAINNET_USDC_MINT),
-    priceUsd: readString("AGON_X402_PRICE_USD", "0.01"),
-    priceAtomic: readBigInt("AGON_X402_PRICE_ATOMIC", "10000"),
     paymentNetwork: SOLANA_MAINNET_CAIP2,
     paymentAssetSymbol: "USDC",
     paymentAssetDecimals: 6,
