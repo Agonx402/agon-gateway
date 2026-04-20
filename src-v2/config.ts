@@ -61,6 +61,8 @@ export function loadConfig(): GatewayConfig {
     alchemyDevnetRpcUrl: readString("ALCHEMY_DEVNET_RPC_URL"),
     heliusMainnetRpcUrl: readString("HELIUS_MAINNET_RPC_URL"),
     heliusDevnetRpcUrl: readString("HELIUS_DEVNET_RPC_URL"),
+    heliusApiKey: readString("HELIUS_API_KEY"),
+    heliusWalletApiBaseUrl: readString("HELIUS_WALLET_API_BASE_URL", "https://api.helius.xyz"),
     tokensApiBaseUrl: readString("TOKENS_API_BASE_URL", "https://api.tokens.xyz"),
     tokensApiKey: readString("TOKENS_API_KEY"),
     rpcRateLimitPerSecond: readNumber("AGON_RATE_LIMIT_RPC_RPS", "50"),

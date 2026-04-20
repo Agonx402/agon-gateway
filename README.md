@@ -19,6 +19,8 @@ This version is intentionally narrow and safe:
 - `GET /healthz`
 - `GET /v1/catalog`
 - `POST /v1/x402/solana/{cluster}/{provider}/{surface}/{method}`
+- `GET /v1/x402/helius/wallet/...`
+- `POST /v1/x402/helius/wallet/batch-identity`
 - `GET /v1/x402/tokens/...`
 - `POST /v1/x402/tokens/assets/market-snapshots`
 
@@ -48,12 +50,24 @@ Supported RPC methods:
 - `getSignaturesForAddress`
 - `getTokenAccountsByOwner`
 - `getProgramAccounts`
+- `getTransactionsForAddress` (Helius only — enhanced transaction history with filtering, sorting, and keyset pagination)
 
 Supported DAS methods:
 
 - `getAsset`
 - `getAssetsByOwner`
 - `searchAssets`
+
+Supported Helius Wallet API routes (mainnet-only, 100 credits per call = `$0.0005`):
+
+- `GET /v1/x402/helius/wallet/identity/:wallet`
+- `POST /v1/x402/helius/wallet/batch-identity`
+- `GET /v1/x402/helius/wallet/balances/:wallet`
+- `GET /v1/x402/helius/wallet/history/:wallet`
+- `GET /v1/x402/helius/wallet/transfers/:wallet`
+- `GET /v1/x402/helius/wallet/funded-by/:wallet`
+
+The `:wallet` path param accepts a base58 Solana address, an SNS `.sol` domain, or an ANS custom TLD (e.g. `miester.bonk`). Domain resolution is mainnet-only.
 
 Supported Tokens API routes:
 
@@ -167,6 +181,8 @@ Copy `.env.example` and set:
 - `ALCHEMY_DEVNET_RPC_URL`
 - `HELIUS_MAINNET_RPC_URL`
 - `HELIUS_DEVNET_RPC_URL`
+- `HELIUS_API_KEY` (bare Helius API key, used as `X-Api-Key` for the Helius Wallet API)
+- `HELIUS_WALLET_API_BASE_URL` (defaults to `https://api.helius.xyz`)
 - `TOKENS_API_BASE_URL`
 - `TOKENS_API_KEY`
 - `AGON_RATE_LIMIT_TOKENS_PER_MINUTE`

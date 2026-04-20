@@ -103,6 +103,58 @@ async function forwardSolanaRequest(
   };
 }
 
+async function forwardHeliusWalletRequest(
+  config: GatewayConfig,
+  resolvedRoute: ResolvedRoute,
+  params: unknown,
+): Promise<UpstreamResult> {
+  const upstreamPath = replacePathParams(resolvedRoute.route.upstreamPath, resolvedRoute.pathParams);
+  const baseUrl = config.heliusWalletApiBaseUrl.endsWith("/")
+    ? config.heliusWalletApiBaseUrl
+    : `${config.heliusWalletApiBaseUrl}/`;
+  const upstreamUrl = new URL(upstreamPath.replace(/^\//, ""), baseUrl);
+  const headers = new Headers();
+
+  if (resolvedRoute.route.requiresUpstreamAuth) {
+    headers.set("x-api-key", config.heliusApiKey);
+  }
+
+  let body: string | undefined;
+  if (resolvedRoute.route.inputMode === "query") {
+    if (!(params instanceof URLSearchParams)) {
+      throw new Error("Helius wallet query routes must forward URLSearchParams.");
+    }
+    const query = params.toString();
+    if (query.length > 0) {
+      upstreamUrl.search = query;
+    }
+  } else {
+    headers.set("content-type", "application/json");
+    body = JSON.stringify(params);
+  }
+
+  const response = await fetch(upstreamUrl, {
+    method: resolvedRoute.route.httpMethod,
+    headers,
+    body,
+  });
+
+  const parsed = await parseUpstreamResponse(response);
+  if (!response.ok) {
+    throw new UpstreamHttpError(
+      `Helius Wallet API returned status ${response.status}.`,
+      response.status,
+      parsed,
+      true,
+    );
+  }
+
+  return {
+    result: parsed,
+    status: response.status,
+  };
+}
+
 async function forwardTokensRequest(
   config: GatewayConfig,
   resolvedRoute: ResolvedRoute,
@@ -159,6 +211,13 @@ export async function forwardToUpstream(
 ): Promise<UpstreamResult> {
   if (resolvedRoute.route.provider === "tokens") {
     return forwardTokensRequest(config, resolvedRoute, params);
+  }
+
+  if (
+    resolvedRoute.route.kind === "helius-wallet-query"
+    || resolvedRoute.route.kind === "helius-wallet-body"
+  ) {
+    return forwardHeliusWalletRequest(config, resolvedRoute, params);
   }
 
   return forwardSolanaRequest(config, resolvedRoute, params);

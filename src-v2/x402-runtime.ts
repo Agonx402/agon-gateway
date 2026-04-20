@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createFacilitatorConfig } from "@coinbase/x402";
 import {
   HTTPFacilitatorClient,
+  type HTTPAdapter,
   type HTTPProcessResult,
   type HTTPResponseInstructions,
   type RouteConfig,
@@ -60,6 +61,68 @@ interface ParsedSolanaQueryParams {
   isEmpty: boolean;
 }
 
+class CachedNextAdapter implements HTTPAdapter {
+  public constructor(
+    private readonly request: NextRequest,
+    private readonly cachedBody?: unknown,
+  ) {}
+
+  public getHeader(name: string): string | undefined {
+    return this.request.headers.get(name) ?? undefined;
+  }
+
+  public getMethod(): string {
+    return this.request.method;
+  }
+
+  public getPath(): string {
+    return this.request.nextUrl.pathname;
+  }
+
+  public getUrl(): string {
+    return this.request.url;
+  }
+
+  public getAcceptHeader(): string {
+    return this.request.headers.get("accept") ?? "";
+  }
+
+  public getUserAgent(): string {
+    return this.request.headers.get("user-agent") ?? "";
+  }
+
+  public getQueryParams(): Record<string, string | string[]> {
+    const params: Record<string, string | string[]> = {};
+
+    for (const [key, value] of this.request.nextUrl.searchParams.entries()) {
+      const existing = params[key];
+      if (existing === undefined) {
+        params[key] = value;
+        continue;
+      }
+
+      params[key] = Array.isArray(existing)
+        ? [...existing, value]
+        : [existing, value];
+    }
+
+    return params;
+  }
+
+  public getQueryParam(name: string): string | string[] | undefined {
+    const values = this.request.nextUrl.searchParams.getAll(name);
+    if (values.length === 0) {
+      return undefined;
+    }
+
+    return values.length === 1 ? values[0] : values;
+  }
+
+  public async getBody(): Promise<unknown> {
+    return this.cachedBody;
+  }
+}
+
 let runtimePromise: Promise<GatewayRuntime> | null = null;
 let facilitatorRuntimePromise: Promise<FacilitatorRuntime> | null = null;
 
@@ -85,6 +148,10 @@ const ACCESS_CONTROL_EXPOSE_HEADERS = [
   "X-PAYMENT-RESPONSE",
   "PAYMENT-RESPONSE",
 ].join(", ");
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function buildDiscoveryExtension(config: GatewayConfig, route: RouteSpec) {
   const outputExample: Record<string, unknown> = {
@@ -225,7 +292,28 @@ function responseFromInstructions(response: HTTPResponseInstructions): NextRespo
     headers.set("content-type", "application/json; charset=utf-8");
   }
 
-  return NextResponse.json(response.body ?? {}, {
+  let responseBody = response.body ?? {};
+  if (
+    response.status === 402
+    && isPlainObject(responseBody)
+    && Object.keys(responseBody).length === 0
+  ) {
+    const paymentRequiredHeader = headers.get("PAYMENT-REQUIRED") ?? headers.get("payment-required");
+    if (paymentRequiredHeader) {
+      try {
+        const decoded = JSON.parse(Buffer.from(paymentRequiredHeader, "base64").toString("utf8")) as {
+          error?: string;
+        };
+        responseBody = decoded.error
+          ? { ok: false, error: decoded.error }
+          : { ok: false, error: "payment_required" };
+      } catch {
+        responseBody = { ok: false, error: "payment_required" };
+      }
+    }
+  }
+
+  return NextResponse.json(responseBody, {
     status: response.status,
     headers,
   });
@@ -594,6 +682,7 @@ async function extractRouteParams(
   request: NextRequest,
   resolvedRoute: ResolvedRoute,
   hasAccessHeader: boolean,
+  parsedBody?: ParsedRequestBody,
 ): Promise<{ params: unknown; isDiscoveryProbe: boolean } | { error: string; status: number }> {
   if (resolvedRoute.route.inputMode === "query") {
     const { params, isEmpty } = extractQueryParams(request);
@@ -632,20 +721,26 @@ async function extractRouteParams(
     return { params: extracted.params, isDiscoveryProbe: false };
   }
 
-  let parsedBody: ParsedRequestBody;
-  try {
-    parsedBody = await parseRequestBody(request);
-  } catch {
+  let body = parsedBody;
+  if (!body) {
+    try {
+      body = await parseRequestBody(request);
+    } catch {
+      return { error: "Request body must be valid JSON.", status: 400 };
+    }
+  }
+
+  if (!body) {
     return { error: "Request body must be valid JSON.", status: 400 };
   }
 
-  const isDiscoveryProbe = !hasAccessHeader && parsedBody.isEmpty;
+  const isDiscoveryProbe = !hasAccessHeader && body.isEmpty;
   if (isDiscoveryProbe) {
     return { params: {}, isDiscoveryProbe: true };
   }
 
   if (resolvedRoute.route.inputMode === "solana-envelope") {
-    const extracted = validateEnvelopeBody(resolvedRoute.route, parsedBody.body);
+    const extracted = validateEnvelopeBody(resolvedRoute.route, body.body);
     if ("error" in extracted) {
       return { error: extracted.error, status: 400 };
     }
@@ -658,12 +753,12 @@ async function extractRouteParams(
     return { params: extracted.params, isDiscoveryProbe: false };
   }
 
-  const paramsError = validateRouteParams(resolvedRoute.route, parsedBody.body, resolvedRoute.pathParams);
+  const paramsError = validateRouteParams(resolvedRoute.route, body.body, resolvedRoute.pathParams);
   if (paramsError) {
     return { error: paramsError, status: 400 };
   }
 
-  return { params: parsedBody.body, isDiscoveryProbe: false };
+  return { params: body.body, isDiscoveryProbe: false };
 }
 
 function requestMethod(request: NextRequest): HttpMethod | null {
@@ -817,7 +912,27 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
   const allowedMethods = allowedMethodsForRoute(route);
   const rawPaymentHeader = paymentHeader(request);
   const rawSiwxHeader = siwxHeader(request);
-  const extractedParams = await extractRouteParams(request, resolvedRoute, Boolean(rawPaymentHeader || rawSiwxHeader));
+  const shouldCacheBody = route.inputMode !== "query"
+    && !(route.inputMode === "solana-envelope" && (request.method === "GET" || request.method === "HEAD"));
+  let parsedBody: ParsedRequestBody | undefined;
+  if (shouldCacheBody) {
+    try {
+      parsedBody = await parseRequestBody(request);
+    } catch {
+      return finalizePublicResponse(
+        NextResponse.json({ ok: false, error: "Request body must be valid JSON." }, { status: 400 }),
+        allowedMethods,
+        requestedMethod === "HEAD",
+      );
+    }
+  }
+
+  const extractedParams = await extractRouteParams(
+    request,
+    resolvedRoute,
+    Boolean(rawPaymentHeader || rawSiwxHeader),
+    parsedBody,
+  );
   if ("error" in extractedParams) {
     return finalizePublicResponse(
       NextResponse.json({ ok: false, error: extractedParams.error }, { status: extractedParams.status }),
@@ -857,11 +972,13 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
     }, "auth_received");
   }
 
-  const adapter = new NextAdapter(request);
+  const adapter = parsedBody
+    ? new CachedNextAdapter(request, parsedBody.isEmpty ? undefined : parsedBody.body)
+    : new NextAdapter(request);
   const httpContext = {
     adapter,
     path: request.nextUrl.pathname,
-    method: route.httpMethod,
+    method: request.method,
     paymentHeader: rawPaymentHeader,
   };
 

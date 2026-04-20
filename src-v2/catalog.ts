@@ -1,3 +1,4 @@
+import { buildHeliusWalletRouteCatalog, validateHeliusWalletRouteParams } from "./helius-wallet-routes";
 import { buildTokensRouteCatalog, validateTokensRouteParams } from "./tokens-routes";
 import type {
   CatalogRouteEntry,
@@ -10,19 +11,34 @@ import type {
   SurfaceName,
 } from "./types";
 
-const CLUSTERS: ClusterName[] = ["mainnet", "devnet"];
-const PROVIDERS: Exclude<ProviderName, "tokens">[] = ["alchemy", "helius"];
+type SolanaProvider = Exclude<ProviderName, "tokens">;
 
-const RPC_METHODS: Array<{ method: string; description: string }> = [
+const CLUSTERS: ClusterName[] = ["mainnet", "devnet"];
+const PROVIDERS: SolanaProvider[] = ["alchemy", "helius"];
+
+interface SolanaMethodSpec {
+  method: string;
+  description: string;
+  // Providers that expose this method. Defaults to both when omitted.
+  providers?: SolanaProvider[];
+}
+
+const RPC_METHODS: SolanaMethodSpec[] = [
   { method: "getBalance", description: "Fetch the lamport balance for an account." },
   { method: "getAccountInfo", description: "Fetch account metadata and raw account data." },
   { method: "getTransaction", description: "Fetch a confirmed transaction by signature." },
   { method: "getSignaturesForAddress", description: "List recent transaction signatures for an address." },
   { method: "getTokenAccountsByOwner", description: "List token accounts owned by an address." },
   { method: "getProgramAccounts", description: "Query accounts owned by a program." },
+  {
+    method: "getTransactionsForAddress",
+    description:
+      "Enhanced transaction history with filtering, sorting, and keyset pagination for any address.",
+    providers: ["helius"],
+  },
 ];
 
-const DAS_METHODS: Array<{ method: string; description: string }> = [
+const DAS_METHODS: SolanaMethodSpec[] = [
   { method: "getAsset", description: "Fetch a single asset by id." },
   { method: "getAssetsByOwner", description: "Fetch digital assets owned by a wallet." },
   { method: "searchAssets", description: "Search digital assets with DAS filters." },
@@ -57,6 +73,7 @@ const HELIUS_RPC_CREDITS_BY_METHOD: Record<string, number> = {
   getSignaturesForAddress: 1,
   getTokenAccountsByOwner: 1,
   getProgramAccounts: 10,
+  getTransactionsForAddress: 50,
 };
 
 const HELIUS_DAS_CREDITS_BY_METHOD: Record<string, number> = {
@@ -118,12 +135,19 @@ function getSolanaRoutePriceUsd(
   return heliusPriceUsd(credits);
 }
 
-function isRouteSupported(cluster: ClusterName, provider: Exclude<ProviderName, "tokens">, surface: SurfaceName): boolean {
+function isRouteSupported(cluster: ClusterName, provider: SolanaProvider, surface: SurfaceName): boolean {
   if (provider === "alchemy" && cluster === "devnet" && surface === "das") {
     return false;
   }
 
   return true;
+}
+
+function methodSupportsProvider(spec: SolanaMethodSpec, provider: SolanaProvider): boolean {
+  if (!spec.providers) {
+    return true;
+  }
+  return spec.providers.includes(provider);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -308,9 +332,200 @@ function validateRpcParams(method: string, params: unknown): string | null {
       return validateProgramAccountConfig(params[1] as Record<string, unknown>);
     }
 
+    case "getTransactionsForAddress":
+      return validateGetTransactionsForAddressParams(params);
+
     default:
       return "Unsupported RPC method.";
   }
+}
+
+const GTFA_TRANSACTION_DETAILS = ["signatures", "full"] as const;
+const GTFA_SORT_ORDERS = ["asc", "desc"] as const;
+const GTFA_COMMITMENTS = ["confirmed", "finalized"] as const;
+const GTFA_ENCODINGS = ["json", "jsonParsed", "base58", "base64"] as const;
+const GTFA_STATUSES = ["succeeded", "failed", "any"] as const;
+const GTFA_TOKEN_ACCOUNT_FILTERS = ["none", "balanceChanged", "all"] as const;
+const GTFA_MAX_SIGNATURES_LIMIT = 1_000;
+const GTFA_MAX_FULL_LIMIT = 100;
+const GTFA_MAX_RANGE_COMPARATORS = ["gte", "gt", "lte", "lt"] as const;
+const GTFA_TIMESTAMP_COMPARATORS = [...GTFA_MAX_RANGE_COMPARATORS, "eq"] as const;
+const GTFA_ALLOWED_FILTER_KEYS = new Set([
+  "slot",
+  "blockTime",
+  "signature",
+  "status",
+  "tokenAccounts",
+]);
+const GTFA_ALLOWED_CONFIG_KEYS = new Set([
+  "transactionDetails",
+  "sortOrder",
+  "commitment",
+  "minContextSlot",
+  "limit",
+  "paginationToken",
+  "encoding",
+  "maxSupportedTransactionVersion",
+  "filters",
+]);
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function validateRangeFilter(
+  filter: Record<string, unknown>,
+  comparators: readonly string[],
+  valueType: "integer" | "string",
+  fieldName: string,
+): string | null {
+  for (const key of Object.keys(filter)) {
+    if (!comparators.includes(key)) {
+      return `filters.${fieldName}.${key} is not a supported comparator (allowed: ${comparators.join(", ")}).`;
+    }
+    const value = filter[key];
+    if (valueType === "integer") {
+      if (!isIntegerInRange(value, 0, Number.MAX_SAFE_INTEGER)) {
+        return `filters.${fieldName}.${key} must be a non-negative integer.`;
+      }
+    } else {
+      if (!isNonEmptyString(value) || value.length > 128) {
+        return `filters.${fieldName}.${key} must be a non-empty string up to 128 characters.`;
+      }
+    }
+  }
+  return null;
+}
+
+function validateGetTransactionsForAddressConfig(config: Record<string, unknown>): string | null {
+  for (const key of Object.keys(config)) {
+    if (!GTFA_ALLOWED_CONFIG_KEYS.has(key)) {
+      return `getTransactionsForAddress config.${key} is not a supported field.`;
+    }
+  }
+
+  const transactionDetails = config.transactionDetails;
+  if (transactionDetails !== undefined && !GTFA_TRANSACTION_DETAILS.includes(transactionDetails as (typeof GTFA_TRANSACTION_DETAILS)[number])) {
+    return `getTransactionsForAddress transactionDetails must be one of: ${GTFA_TRANSACTION_DETAILS.join(", ")}.`;
+  }
+
+  const sortOrder = config.sortOrder;
+  if (sortOrder !== undefined && !GTFA_SORT_ORDERS.includes(sortOrder as (typeof GTFA_SORT_ORDERS)[number])) {
+    return `getTransactionsForAddress sortOrder must be one of: ${GTFA_SORT_ORDERS.join(", ")}.`;
+  }
+
+  const commitment = config.commitment;
+  if (commitment !== undefined && !GTFA_COMMITMENTS.includes(commitment as (typeof GTFA_COMMITMENTS)[number])) {
+    return `getTransactionsForAddress commitment must be one of: ${GTFA_COMMITMENTS.join(", ")}.`;
+  }
+
+  const encoding = config.encoding;
+  if (encoding !== undefined && !GTFA_ENCODINGS.includes(encoding as (typeof GTFA_ENCODINGS)[number])) {
+    return `getTransactionsForAddress encoding must be one of: ${GTFA_ENCODINGS.join(", ")}.`;
+  }
+
+  if (config.minContextSlot !== undefined && !isNonNegativeInteger(config.minContextSlot)) {
+    return "getTransactionsForAddress minContextSlot must be a non-negative integer.";
+  }
+
+  if (config.maxSupportedTransactionVersion !== undefined && !isNonNegativeInteger(config.maxSupportedTransactionVersion)) {
+    return "getTransactionsForAddress maxSupportedTransactionVersion must be a non-negative integer.";
+  }
+
+  if (config.paginationToken !== undefined && !isNonEmptyString(config.paginationToken)) {
+    return "getTransactionsForAddress paginationToken must be a non-empty string.";
+  }
+
+  if (config.limit !== undefined) {
+    const isFull = transactionDetails === "full";
+    const maxLimit = isFull ? GTFA_MAX_FULL_LIMIT : GTFA_MAX_SIGNATURES_LIMIT;
+    if (!isIntegerInRange(config.limit, 1, maxLimit)) {
+      return `getTransactionsForAddress limit must be an integer between 1 and ${maxLimit} (transactionDetails=${isFull ? "full" : "signatures"}).`;
+    }
+  }
+
+  if (config.filters !== undefined) {
+    if (!isPlainObject(config.filters)) {
+      return "getTransactionsForAddress filters must be an object.";
+    }
+
+    for (const key of Object.keys(config.filters)) {
+      if (!GTFA_ALLOWED_FILTER_KEYS.has(key)) {
+        return `getTransactionsForAddress filters.${key} is not a supported filter.`;
+      }
+    }
+
+    if (config.filters.slot !== undefined) {
+      if (!isPlainObject(config.filters.slot)) {
+        return "getTransactionsForAddress filters.slot must be an object.";
+      }
+      const slotError = validateRangeFilter(
+        config.filters.slot as Record<string, unknown>,
+        GTFA_MAX_RANGE_COMPARATORS,
+        "integer",
+        "slot",
+      );
+      if (slotError) return slotError;
+    }
+
+    if (config.filters.blockTime !== undefined) {
+      if (!isPlainObject(config.filters.blockTime)) {
+        return "getTransactionsForAddress filters.blockTime must be an object.";
+      }
+      const blockTimeError = validateRangeFilter(
+        config.filters.blockTime as Record<string, unknown>,
+        GTFA_TIMESTAMP_COMPARATORS,
+        "integer",
+        "blockTime",
+      );
+      if (blockTimeError) return blockTimeError;
+    }
+
+    if (config.filters.signature !== undefined) {
+      if (!isPlainObject(config.filters.signature)) {
+        return "getTransactionsForAddress filters.signature must be an object.";
+      }
+      const signatureError = validateRangeFilter(
+        config.filters.signature as Record<string, unknown>,
+        GTFA_MAX_RANGE_COMPARATORS,
+        "string",
+        "signature",
+      );
+      if (signatureError) return signatureError;
+    }
+
+    if (
+      config.filters.status !== undefined
+      && !GTFA_STATUSES.includes(config.filters.status as (typeof GTFA_STATUSES)[number])
+    ) {
+      return `getTransactionsForAddress filters.status must be one of: ${GTFA_STATUSES.join(", ")}.`;
+    }
+
+    if (
+      config.filters.tokenAccounts !== undefined
+      && !GTFA_TOKEN_ACCOUNT_FILTERS.includes(config.filters.tokenAccounts as (typeof GTFA_TOKEN_ACCOUNT_FILTERS)[number])
+    ) {
+      return `getTransactionsForAddress filters.tokenAccounts must be one of: ${GTFA_TOKEN_ACCOUNT_FILTERS.join(", ")}.`;
+    }
+  }
+
+  return null;
+}
+
+function validateGetTransactionsForAddressParams(params: unknown[]): string | null {
+  if (params.length < 1 || params.length > 2) {
+    return "getTransactionsForAddress expects 1 or 2 params.";
+  }
+  if (!isNonEmptyString(params[0])) {
+    return "getTransactionsForAddress requires the address as the first param.";
+  }
+  if (params[1] === undefined) {
+    return null;
+  }
+  if (!isPlainObject(params[1])) {
+    return "getTransactionsForAddress config must be an object when provided.";
+  }
+  return validateGetTransactionsForAddressConfig(params[1] as Record<string, unknown>);
 }
 
 function validateDasParams(method: string, params: unknown): string | null {
@@ -429,19 +644,20 @@ export function buildRouteCatalog(config: GatewayConfig): RouteSpec[] {
   for (const cluster of CLUSTERS) {
     for (const provider of PROVIDERS) {
       for (const rpc of RPC_METHODS) {
-        if (isRouteSupported(cluster, provider, "rpc")) {
-          routes.push(buildSolanaRouteSpec(config, cluster, provider, "rpc", rpc.method, rpc.description));
-        }
+        if (!methodSupportsProvider(rpc, provider)) continue;
+        if (!isRouteSupported(cluster, provider, "rpc")) continue;
+        routes.push(buildSolanaRouteSpec(config, cluster, provider, "rpc", rpc.method, rpc.description));
       }
 
       for (const das of DAS_METHODS) {
-        if (isRouteSupported(cluster, provider, "das")) {
-          routes.push(buildSolanaRouteSpec(config, cluster, provider, "das", das.method, das.description));
-        }
+        if (!methodSupportsProvider(das, provider)) continue;
+        if (!isRouteSupported(cluster, provider, "das")) continue;
+        routes.push(buildSolanaRouteSpec(config, cluster, provider, "das", das.method, das.description));
       }
     }
   }
 
+  routes.push(...buildHeliusWalletRouteCatalog(config));
   routes.push(...buildTokensRouteCatalog(config));
   return routes;
 }
@@ -562,6 +778,9 @@ export function validateRouteParams(
     case "tokens-query":
     case "tokens-body":
       return validateTokensRouteParams(route, params, pathParams);
+    case "helius-wallet-query":
+    case "helius-wallet-body":
+      return validateHeliusWalletRouteParams(route, params, pathParams);
     default:
       return "Unsupported route kind.";
   }
