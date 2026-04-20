@@ -467,8 +467,29 @@ async function createRuntime(): Promise<GatewayRuntime> {
   const state = new HostedGatewayState(config);
   const { facilitator } = await getFacilitatorRuntime();
   const facilitatorClient = {
-    verify: facilitator.verify.bind(facilitator),
-    settle: facilitator.settle.bind(facilitator),
+    verify: async (...args: Parameters<typeof facilitator.verify>) => {
+      const result = await facilitator.verify(...args);
+      if (!result.isValid) {
+        console.error("[agon-gateway] facilitator verify failed", {
+          invalidReason: result.invalidReason,
+          invalidMessage: "invalidMessage" in result ? result.invalidMessage : undefined,
+          payer: result.payer,
+        });
+      }
+      return result;
+    },
+    settle: async (...args: Parameters<typeof facilitator.settle>) => {
+      const result = await facilitator.settle(...args);
+      if (!result.success) {
+        console.error("[agon-gateway] facilitator settle failed", {
+          errorReason: result.errorReason,
+          errorMessage: "errorMessage" in result ? result.errorMessage : undefined,
+          payer: result.payer,
+          transaction: result.transaction,
+        });
+      }
+      return result;
+    },
     getSupported: async () => facilitator.getSupported(),
   } as ConstructorParameters<typeof x402ResourceServer>[0];
 
