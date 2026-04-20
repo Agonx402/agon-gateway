@@ -47,8 +47,8 @@ export function loadConfig(): GatewayConfig {
   return {
     port: readNumber("PORT", "8080"),
     baseUrl: readString("AGON_GATEWAY_BASE_URL", baseUrlFallback),
-    cdpApiKeyId: readString("CDP_API_KEY_ID"),
-    cdpApiKeySecret: readString("CDP_API_KEY_SECRET"),
+    cdpApiKeyId: readOptionalString("CDP_API_KEY_ID"),
+    cdpApiKeySecret: readOptionalString("CDP_API_KEY_SECRET"),
     facilitatorWalletBase58: readOptionalString("AGON_FACILITATOR_WALLET_BASE58"),
     internalSettlementSecret: readOptionalString("AGON_INTERNAL_SETTLEMENT_SECRET"),
     payToWallet: readString("AGON_X402_PAY_TO_WALLET", process.env.AGON_GATEWAY_PAYEE_WALLET),

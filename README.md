@@ -6,7 +6,7 @@ This version is intentionally narrow and safe:
 
 - standard x402 `exact` flow for paid infrastructure routes
 - SIWX auth-only x402 flow for Tokens API routes
-- CDP facilitator for standard x402 verification + settlement
+- self-hosted facilitator for standard x402 verification + settlement
 - Solana mainnet USDC settlement
 - Alchemy + Helius upstreams
 - Tokens API v1 proxying with server-side `x-api-key` auth and wallet signatures instead of end-user API keys
@@ -117,7 +117,7 @@ Paid Solana RPC / DAS routes use standard x402 exact payment:
 2. receive `402 Payment Required`
 3. retry with `PAYMENT-SIGNATURE`
 4. verify the payment and call the upstream provider
-5. settle through the CDP facilitator only after a successful upstream response
+5. settle through the internal facilitator only after a successful upstream response
 6. serve the response
 
 Tokens API routes use SIWX auth-only x402:
@@ -139,9 +139,9 @@ Current payment rail:
 
 Bazaar discovery note:
 
-- the CDP Bazaar crawler probes routes with an empty request body
-- paid routes must still return `402 Payment Required` for that probe
-- body validation now happens after the initial challenge for empty unpaid probes
+- exact-payment POST routes must be challenged with the final JSON body you intend to buy
+- the paid retry must reuse the exact same method, URL, and JSON body
+- empty-body probes are only valid for free/auth-only routes
 
 ## Hosted safety model
 
@@ -172,8 +172,8 @@ Request guardrails:
 Copy `.env.example` and set:
 
 - `AGON_GATEWAY_BASE_URL`
-- `CDP_API_KEY_ID`
-- `CDP_API_KEY_SECRET`
+- `AGON_FACILITATOR_WALLET_BASE58`
+- `AGON_INTERNAL_SETTLEMENT_SECRET`
 - `AGON_X402_PAY_TO_WALLET`
 - `AGON_X402_USDC_MINT`
 - `SOLANA_MAINNET_RPC_URL`
@@ -189,10 +189,10 @@ Copy `.env.example` and set:
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
 
-Optional, only if you still want the internal facilitator routes available:
+Optional legacy config if you still want to keep CDP auth material around for other tooling:
 
-- `AGON_INTERNAL_SETTLEMENT_SECRET`
-- `AGON_FACILITATOR_WALLET_BASE58`
+- `CDP_API_KEY_ID`
+- `CDP_API_KEY_SECRET`
 
 ## Local build
 

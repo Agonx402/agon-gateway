@@ -1,7 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createFacilitatorConfig } from "@coinbase/x402";
 import {
-  HTTPFacilitatorClient,
   type HTTPAdapter,
   type HTTPProcessResult,
   type HTTPResponseInstructions,
@@ -435,9 +433,12 @@ async function getFacilitatorRuntime(): Promise<FacilitatorRuntime> {
 async function createRuntime(): Promise<GatewayRuntime> {
   const config = loadConfig();
   const state = new HostedGatewayState(config);
-  const facilitatorClient = new HTTPFacilitatorClient(
-    createFacilitatorConfig(config.cdpApiKeyId, config.cdpApiKeySecret),
-  );
+  const { facilitator } = await getFacilitatorRuntime();
+  const facilitatorClient = {
+    verify: facilitator.verify.bind(facilitator),
+    settle: facilitator.settle.bind(facilitator),
+    getSupported: async () => facilitator.getSupported(),
+  } as ConstructorParameters<typeof x402ResourceServer>[0];
 
   const resourceServer = new x402ResourceServer(facilitatorClient);
   registerExactSvmServerScheme(resourceServer, {
