@@ -223,6 +223,8 @@ function buildRoutesConfig(config: GatewayConfig, routes: RouteSpec[]): RoutesCo
   const entries: Record<string, RouteConfig> = {};
 
   for (const route of routes) {
+    const resourceUrl = new URL(route.path, config.baseUrl).toString();
+
     if (route.accessMode === "exact") {
       if (!route.priceUsd) {
         continue;
@@ -236,6 +238,7 @@ function buildRoutesConfig(config: GatewayConfig, routes: RouteSpec[]): RoutesCo
           network: SOLANA_MAINNET_CAIP2,
           payTo: config.payToWallet,
         },
+        resource: resourceUrl,
         description: route.description,
         mimeType: "application/json",
         extensions: buildRouteExtensions(config, route),
@@ -245,6 +248,7 @@ function buildRoutesConfig(config: GatewayConfig, routes: RouteSpec[]): RoutesCo
 
     entries[`${route.httpMethod} ${route.path}`] = {
       accepts: [],
+      resource: resourceUrl,
       description: route.description,
       mimeType: "application/json",
       extensions: buildRouteExtensions(config, route),
@@ -367,6 +371,32 @@ function eventBase(config: GatewayConfig, route?: RouteSpec): Omit<EventRecord, 
       }
       : {}),
   };
+}
+
+function missingRequestInputError(route: RouteSpec): string {
+  if (route.accessMode === "exact") {
+    switch (route.kind) {
+      case "solana-rpc":
+        return 'Exact-payment RPC routes must be challenged with the final params. Send the first request with body shape: { "params": [...] } or query param "params" containing a JSON array.';
+      case "solana-das":
+        return 'Exact-payment DAS routes must be challenged with the final params. Send the first request with body shape: { "params": { ... } } or query param "params" containing a JSON object.';
+      default:
+        return "Exact-payment routes must be challenged with the exact params you intend to buy.";
+    }
+  }
+
+  switch (route.inputMode) {
+    case "solana-envelope":
+      return route.kind === "solana-rpc"
+        ? 'Send body shape: { "params": [...] } or query param "params" containing a JSON array.'
+        : 'Send body shape: { "params": { ... } } or query param "params" containing a JSON object.';
+    case "json-body":
+      return "This route requires a JSON request body.";
+    case "query":
+      return "This route requires query parameters.";
+    default:
+      return "This route requires request input.";
+  }
 }
 
 async function recordEvent(state: HostedGatewayState, event: EventRecord, counterKey?: string): Promise<void> {
@@ -686,9 +716,16 @@ async function extractRouteParams(
 ): Promise<{ params: unknown; isDiscoveryProbe: boolean } | { error: string; status: number }> {
   if (resolvedRoute.route.inputMode === "query") {
     const { params, isEmpty } = extractQueryParams(request);
-    const isDiscoveryProbe = !hasAccessHeader && isEmpty;
+    const isDiscoveryProbe = !hasAccessHeader && isEmpty && resolvedRoute.route.accessMode !== "exact";
     if (isDiscoveryProbe) {
       return { params, isDiscoveryProbe: true };
+    }
+
+    if (!hasAccessHeader && isEmpty) {
+      return {
+        error: missingRequestInputError(resolvedRoute.route),
+        status: 400,
+      };
     }
 
     const paramsError = validateRouteParams(resolvedRoute.route, params, resolvedRoute.pathParams);
@@ -708,9 +745,16 @@ async function extractRouteParams(
       return { error: extracted.error, status: 400 };
     }
 
-    const isDiscoveryProbe = !hasAccessHeader && extracted.isEmpty;
+    const isDiscoveryProbe = !hasAccessHeader && extracted.isEmpty && resolvedRoute.route.accessMode !== "exact";
     if (isDiscoveryProbe) {
       return { params: extracted.params, isDiscoveryProbe: true };
+    }
+
+    if (!hasAccessHeader && extracted.isEmpty) {
+      return {
+        error: missingRequestInputError(resolvedRoute.route),
+        status: 400,
+      };
     }
 
     const paramsError = validateRouteParams(resolvedRoute.route, extracted.params, resolvedRoute.pathParams);
@@ -734,9 +778,16 @@ async function extractRouteParams(
     return { error: "Request body must be valid JSON.", status: 400 };
   }
 
-  const isDiscoveryProbe = !hasAccessHeader && body.isEmpty;
+  const isDiscoveryProbe = !hasAccessHeader && body.isEmpty && resolvedRoute.route.accessMode !== "exact";
   if (isDiscoveryProbe) {
     return { params: {}, isDiscoveryProbe: true };
+  }
+
+  if (!hasAccessHeader && body.isEmpty) {
+    return {
+      error: missingRequestInputError(resolvedRoute.route),
+      status: 400,
+    };
   }
 
   if (resolvedRoute.route.inputMode === "solana-envelope") {
