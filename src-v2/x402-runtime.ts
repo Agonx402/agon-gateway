@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { decodePaymentRequiredHeader } from "@x402/core/http";
 import {
   type HTTPAdapter,
   type HTTPProcessResult,
@@ -319,6 +320,37 @@ function responseFromInstructions(response: HTTPResponseInstructions): NextRespo
     status: response.status,
     headers,
   });
+}
+
+function extractPaymentError(response: HTTPResponseInstructions): Record<string, unknown> | undefined {
+  const headers = new Headers(response.headers);
+  const paymentRequiredHeader = headers.get("PAYMENT-REQUIRED") ?? headers.get("payment-required");
+  if (paymentRequiredHeader) {
+    try {
+      const decoded = decodePaymentRequiredHeader(paymentRequiredHeader) as {
+        error?: string;
+        accepts?: Array<{ network?: string; asset?: string; payTo?: string; amount?: string }>;
+      };
+      const accepted = decoded.accepts?.[0];
+      return {
+        reason: decoded.error ?? "payment_required",
+        ...(accepted?.network ? { network: accepted.network } : {}),
+        ...(accepted?.asset ? { asset: accepted.asset } : {}),
+        ...(accepted?.payTo ? { payTo: accepted.payTo } : {}),
+        ...(accepted?.amount ? { amount: accepted.amount } : {}),
+      };
+    } catch {
+      return {
+        reason: "payment_required",
+      };
+    }
+  }
+
+  if (isPlainObject(response.body) && Object.keys(response.body).length > 0) {
+    return response.body;
+  }
+
+  return undefined;
 }
 
 function allowedMethodsForRoute(route: RouteSpec): string[] {
@@ -1081,9 +1113,9 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
       ...eventBase(runtime.config, route),
       httpStatus: processResult.response.status,
       detail: rawPaymentHeader
-        ? { reason: "verification_failed" }
+        ? extractPaymentError(processResult.response) ?? { reason: "verification_failed" }
         : rawSiwxHeader
-          ? { reason: "authentication_failed" }
+          ? extractPaymentError(processResult.response) ?? { reason: "authentication_failed" }
           : undefined,
     }, event);
     return finalizePublicResponse(
