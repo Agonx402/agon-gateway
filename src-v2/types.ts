@@ -64,8 +64,10 @@ export interface CatalogRouteEntry {
   };
   enabled: boolean;
   inputSchema: Record<string, unknown>;
+  inputExample?: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   pathParamsSchema?: Record<string, unknown>;
+  pathParamsExample?: Record<string, string>;
 }
 
 export interface CatalogProviderEntry {

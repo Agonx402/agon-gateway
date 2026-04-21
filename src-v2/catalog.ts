@@ -687,8 +687,12 @@ export function buildCatalogEntries(config: GatewayConfig, routes: RouteSpec[]):
       : {}),
     enabled: true,
     inputSchema: route.inputSchema,
+    ...(route.inputExample && Object.keys(route.inputExample).length > 0
+      ? { inputExample: route.inputExample }
+      : {}),
     outputSchema: route.outputSchema,
     pathParamsSchema: route.pathParamsSchema,
+    ...(route.pathParamsExample ? { pathParamsExample: route.pathParamsExample } : {}),
   }));
 }
 

@@ -403,6 +403,29 @@ function eventBase(config: GatewayConfig, route?: RouteSpec): Omit<EventRecord, 
   };
 }
 
+/**
+ * Whether a request body/query payload is *strictly* required for this route.
+ *
+ * An exact-pay route's challenge must commit to the exact params being bought
+ * — but when the `inputSchema` itself accepts no input (e.g. wallet-identity,
+ * which takes only a path param), the URL alone is the commitment and an
+ * empty body/query is the only legal request shape.
+ *
+ * We treat a route as requiring input only when its `inputSchema` declares at
+ * least one required property. `solana-envelope` routes always require input
+ * because the envelope itself (`{ params }`) is the payload.
+ */
+function routeRequiresRequestInput(route: RouteSpec): boolean {
+  if (route.inputMode === "solana-envelope") {
+    return true;
+  }
+  const schema = route.inputSchema as
+    | { required?: unknown }
+    | undefined;
+  const required = schema?.required;
+  return Array.isArray(required) && required.length > 0;
+}
+
 function missingRequestInputError(route: RouteSpec): string {
   if (route.accessMode === "exact") {
     switch (route.kind) {
@@ -770,12 +793,13 @@ async function extractRouteParams(
 ): Promise<{ params: unknown; isDiscoveryProbe: boolean } | { error: string; status: number }> {
   if (resolvedRoute.route.inputMode === "query") {
     const { params, isEmpty } = extractQueryParams(request);
+    const requiresInput = routeRequiresRequestInput(resolvedRoute.route);
     const isDiscoveryProbe = !hasAccessHeader && isEmpty && resolvedRoute.route.accessMode !== "exact";
     if (isDiscoveryProbe) {
       return { params, isDiscoveryProbe: true };
     }
 
-    if (!hasAccessHeader && isEmpty) {
+    if (!hasAccessHeader && isEmpty && requiresInput) {
       return {
         error: missingRequestInputError(resolvedRoute.route),
         status: 400,
@@ -799,12 +823,13 @@ async function extractRouteParams(
       return { error: extracted.error, status: 400 };
     }
 
+    const requiresInput = routeRequiresRequestInput(resolvedRoute.route);
     const isDiscoveryProbe = !hasAccessHeader && extracted.isEmpty && resolvedRoute.route.accessMode !== "exact";
     if (isDiscoveryProbe) {
       return { params: extracted.params, isDiscoveryProbe: true };
     }
 
-    if (!hasAccessHeader && extracted.isEmpty) {
+    if (!hasAccessHeader && extracted.isEmpty && requiresInput) {
       return {
         error: missingRequestInputError(resolvedRoute.route),
         status: 400,
@@ -832,12 +857,13 @@ async function extractRouteParams(
     return { error: "Request body must be valid JSON.", status: 400 };
   }
 
+  const requiresInput = routeRequiresRequestInput(resolvedRoute.route);
   const isDiscoveryProbe = !hasAccessHeader && body.isEmpty && resolvedRoute.route.accessMode !== "exact";
   if (isDiscoveryProbe) {
     return { params: {}, isDiscoveryProbe: true };
   }
 
-  if (!hasAccessHeader && body.isEmpty) {
+  if (!hasAccessHeader && body.isEmpty && requiresInput) {
     return {
       error: missingRequestInputError(resolvedRoute.route),
       status: 400,
