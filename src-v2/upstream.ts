@@ -133,6 +133,16 @@ async function forwardHeliusWalletRequest(
     body = JSON.stringify(params);
   }
 
+  // Helius wallet endpoints use the same base URL for both clusters; for our
+  // devnet route family, pin `network=devnet` unless the caller already
+  // provided a value.
+  if (
+    resolvedRoute.route.cluster === "devnet"
+    && !upstreamUrl.searchParams.has("network")
+  ) {
+    upstreamUrl.searchParams.set("network", "devnet");
+  }
+
   const response = await fetch(upstreamUrl, {
     method: resolvedRoute.route.httpMethod,
     headers,

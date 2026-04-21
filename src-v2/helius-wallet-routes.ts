@@ -1,4 +1,4 @@
-import type { GatewayConfig, RouteSpec } from "./types";
+import type { ClusterName, GatewayConfig, RouteSpec } from "./types";
 
 // Helius Wallet API pricing, checked against official Helius docs on 2026-04-20:
 // - All wallet endpoints cost 100 credits per request.
@@ -7,6 +7,8 @@ import type { GatewayConfig, RouteSpec } from "./types";
 const USD_MICRO_UNITS = 1_000_000;
 const HELIUS_USD_MICROS_PER_MILLION_CREDITS = 5_000_000;
 const HELIUS_WALLET_CREDITS_PER_CALL = 100;
+// Flat surcharge added to every paid endpoint to cover transaction fees.
+const TX_FEE_SURCHARGE_USD_MICROS = 600;
 
 const MAX_BATCH_IDENTITY_INPUTS = 100;
 const MAX_BALANCES_LIMIT = 100;
@@ -81,7 +83,7 @@ export function heliusWalletPriceUsd(): string {
   const micros = ceilDiv(
     HELIUS_WALLET_CREDITS_PER_CALL * HELIUS_USD_MICROS_PER_MILLION_CREDITS,
     1_000_000,
-  );
+  ) + TX_FEE_SURCHARGE_USD_MICROS;
   return formatUsdMicros(micros);
 }
 
@@ -116,6 +118,7 @@ const WALLET_PATH_PARAMS_SCHEMA = {
 
 function buildWalletQueryRoute(
   config: GatewayConfig,
+  cluster: ClusterName,
   options: {
     path: string;
     upstreamPath: string;
@@ -136,7 +139,7 @@ function buildWalletQueryRoute(
     paymentRequired: true,
     provider: "helius",
     surface: "wallet",
-    cluster: "mainnet",
+    cluster,
     method: options.method,
     description: options.description,
     inputMode: "query",
@@ -146,7 +149,7 @@ function buildWalletQueryRoute(
     priceUsd: heliusWalletPriceUsd(),
     upstreamPath: options.upstreamPath,
     requiresUpstreamAuth: true,
-    rateLimitScope: "helius:mainnet:wallet",
+    rateLimitScope: `helius:${cluster}:wallet`,
     rateLimitLimit: config.dasRateLimitPerSecond,
     rateLimitWindowMs: WALLET_RATE_LIMIT_WINDOW_MS,
     pathParamsSchema: options.pathParamsSchema,
@@ -156,6 +159,7 @@ function buildWalletQueryRoute(
 
 function buildWalletBodyRoute(
   config: GatewayConfig,
+  cluster: ClusterName,
   options: {
     path: string;
     upstreamPath: string;
@@ -174,7 +178,7 @@ function buildWalletBodyRoute(
     paymentRequired: true,
     provider: "helius",
     surface: "wallet",
-    cluster: "mainnet",
+    cluster,
     method: options.method,
     description: options.description,
     inputMode: "json-body",
@@ -184,20 +188,22 @@ function buildWalletBodyRoute(
     priceUsd: heliusWalletPriceUsd(),
     upstreamPath: options.upstreamPath,
     requiresUpstreamAuth: true,
-    rateLimitScope: "helius:mainnet:wallet",
+    rateLimitScope: `helius:${cluster}:wallet`,
     rateLimitLimit: config.dasRateLimitPerSecond,
     rateLimitWindowMs: WALLET_RATE_LIMIT_WINDOW_MS,
   };
 }
 
 export function buildHeliusWalletRouteCatalog(config: GatewayConfig): RouteSpec[] {
-  return [
-    buildWalletQueryRoute(config, {
-      path: "/v1/x402/helius/wallet/identity/:wallet",
+  const makeRoutes = (cluster: ClusterName, pathPrefix: string): RouteSpec[] => [
+    buildWalletQueryRoute(config, cluster, {
+      path: `${pathPrefix}/identity/:wallet`,
       upstreamPath: "/v1/wallet/:wallet/identity",
       method: "identity",
       description:
-        "Resolve on-chain identity for a Solana wallet address or SNS/ANS domain (mainnet-only).",
+        cluster === "mainnet"
+          ? "Resolve on-chain identity for a Solana wallet address or SNS/ANS domain (mainnet-only)."
+          : "Resolve on-chain identity for a Solana wallet address on devnet.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -206,8 +212,8 @@ export function buildHeliusWalletRouteCatalog(config: GatewayConfig): RouteSpec[
       pathParamsSchema: WALLET_PATH_PARAMS_SCHEMA,
       pathParamsExample: { wallet: "toly.sol" },
     }),
-    buildWalletBodyRoute(config, {
-      path: "/v1/x402/helius/wallet/batch-identity",
+    buildWalletBodyRoute(config, cluster, {
+      path: `${pathPrefix}/batch-identity`,
       upstreamPath: "/v1/wallet/batch-identity",
       method: "batchIdentity",
       description:
@@ -231,8 +237,8 @@ export function buildHeliusWalletRouteCatalog(config: GatewayConfig): RouteSpec[
         wallets: ["GQUtvPx89ZNCwmvQqFmH59bJcU8fW8siETpaxod7Aydz", "toly.sol"],
       },
     }),
-    buildWalletQueryRoute(config, {
-      path: "/v1/x402/helius/wallet/balances/:wallet",
+    buildWalletQueryRoute(config, cluster, {
+      path: `${pathPrefix}/balances/:wallet`,
       upstreamPath: "/v1/wallet/:wallet/balances",
       method: "balances",
       description:
@@ -252,8 +258,8 @@ export function buildHeliusWalletRouteCatalog(config: GatewayConfig): RouteSpec[
       pathParamsSchema: WALLET_PATH_PARAMS_SCHEMA,
       pathParamsExample: { wallet: "GQUtvPx89ZNCwmvQqFmH59bJcU8fW8siETpaxod7Aydz" },
     }),
-    buildWalletQueryRoute(config, {
-      path: "/v1/x402/helius/wallet/history/:wallet",
+    buildWalletQueryRoute(config, cluster, {
+      path: `${pathPrefix}/history/:wallet`,
       upstreamPath: "/v1/wallet/:wallet/history",
       method: "history",
       description:
@@ -273,8 +279,8 @@ export function buildHeliusWalletRouteCatalog(config: GatewayConfig): RouteSpec[
       pathParamsSchema: WALLET_PATH_PARAMS_SCHEMA,
       pathParamsExample: { wallet: "GQUtvPx89ZNCwmvQqFmH59bJcU8fW8siETpaxod7Aydz" },
     }),
-    buildWalletQueryRoute(config, {
-      path: "/v1/x402/helius/wallet/transfers/:wallet",
+    buildWalletQueryRoute(config, cluster, {
+      path: `${pathPrefix}/transfers/:wallet`,
       upstreamPath: "/v1/wallet/:wallet/transfers",
       method: "transfers",
       description:
@@ -291,8 +297,8 @@ export function buildHeliusWalletRouteCatalog(config: GatewayConfig): RouteSpec[
       pathParamsSchema: WALLET_PATH_PARAMS_SCHEMA,
       pathParamsExample: { wallet: "GQUtvPx89ZNCwmvQqFmH59bJcU8fW8siETpaxod7Aydz" },
     }),
-    buildWalletQueryRoute(config, {
-      path: "/v1/x402/helius/wallet/funded-by/:wallet",
+    buildWalletQueryRoute(config, cluster, {
+      path: `${pathPrefix}/funded-by/:wallet`,
       upstreamPath: "/v1/wallet/:wallet/funded-by",
       method: "fundedBy",
       description:
@@ -305,6 +311,13 @@ export function buildHeliusWalletRouteCatalog(config: GatewayConfig): RouteSpec[
       pathParamsSchema: WALLET_PATH_PARAMS_SCHEMA,
       pathParamsExample: { wallet: "GQUtvPx89ZNCwmvQqFmH59bJcU8fW8siETpaxod7Aydz" },
     }),
+  ];
+
+  return [
+    // Legacy mainnet path family (no explicit cluster segment).
+    ...makeRoutes("mainnet", "/v1/x402/helius/wallet"),
+    // New devnet path family.
+    ...makeRoutes("devnet", "/v1/x402/helius/devnet/wallet"),
   ];
 }
 

@@ -50,6 +50,8 @@ const DAS_METHODS: SolanaMethodSpec[] = [
 const USD_MICRO_UNITS = 1_000_000;
 const ALCHEMY_USD_MICROS_PER_MILLION_CU = 450_000;
 const HELIUS_USD_MICROS_PER_MILLION_CREDITS = 5_000_000;
+// Flat surcharge added to every paid endpoint to cover transaction fees.
+const TX_FEE_SURCHARGE_USD_MICROS = 600;
 
 const ALCHEMY_RPC_CU_BY_METHOD: Record<string, number> = {
   getBalance: 10,
@@ -98,12 +100,16 @@ function ceilDiv(numerator: number, denominator: number): number {
 }
 
 function alchemyPriceUsd(cu: number): string {
-  const micros = ceilDiv(cu * ALCHEMY_USD_MICROS_PER_MILLION_CU, 1_000_000);
+  const micros = ceilDiv(cu * ALCHEMY_USD_MICROS_PER_MILLION_CU, 1_000_000)
+    + TX_FEE_SURCHARGE_USD_MICROS;
   return formatUsdMicros(micros);
 }
 
 function heliusPriceUsd(credits: number): string {
-  const micros = ceilDiv(credits * HELIUS_USD_MICROS_PER_MILLION_CREDITS, 1_000_000);
+  const micros = ceilDiv(
+    credits * HELIUS_USD_MICROS_PER_MILLION_CREDITS,
+    1_000_000,
+  ) + TX_FEE_SURCHARGE_USD_MICROS;
   return formatUsdMicros(micros);
 }
 

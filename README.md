@@ -58,7 +58,7 @@ Supported DAS methods:
 - `getAssetsByOwner`
 - `searchAssets`
 
-Supported Helius Wallet API routes (mainnet-only, 100 credits per call = `$0.0005`):
+Supported Helius Wallet API routes (100 credits per call = `$0.0005`):
 
 - `GET /v1/x402/helius/wallet/identity/:wallet`
 - `POST /v1/x402/helius/wallet/batch-identity`
@@ -66,6 +66,15 @@ Supported Helius Wallet API routes (mainnet-only, 100 credits per call = `$0.000
 - `GET /v1/x402/helius/wallet/history/:wallet`
 - `GET /v1/x402/helius/wallet/transfers/:wallet`
 - `GET /v1/x402/helius/wallet/funded-by/:wallet`
+
+Devnet route family (same methods, explicit cluster in path):
+
+- `GET /v1/x402/helius/devnet/wallet/identity/:wallet`
+- `POST /v1/x402/helius/devnet/wallet/batch-identity`
+- `GET /v1/x402/helius/devnet/wallet/balances/:wallet`
+- `GET /v1/x402/helius/devnet/wallet/history/:wallet`
+- `GET /v1/x402/helius/devnet/wallet/transfers/:wallet`
+- `GET /v1/x402/helius/devnet/wallet/funded-by/:wallet`
 
 The `:wallet` path param accepts a base58 Solana address, an SNS `.sol` domain, or an ANS custom TLD (e.g. `miester.bonk`). Domain resolution is mainnet-only.
 
