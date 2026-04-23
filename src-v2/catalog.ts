@@ -16,6 +16,18 @@ type SolanaProvider = Exclude<ProviderName, "tokens">;
 const CLUSTERS: ClusterName[] = ["mainnet", "devnet"];
 const PROVIDERS: SolanaProvider[] = ["alchemy", "helius"];
 
+function routePaymentNetwork(config: GatewayConfig, route: RouteSpec): string {
+  return route.cluster === "devnet"
+    ? config.devnetPaymentNetwork
+    : config.mainnetPaymentNetwork;
+}
+
+function routePaymentMint(config: GatewayConfig, route: RouteSpec): string {
+  return route.cluster === "devnet"
+    ? config.devnetUsdcMint
+    : config.mainnetUsdcMint;
+}
+
 interface SolanaMethodSpec {
   method: string;
   description: string;
@@ -372,6 +384,9 @@ const GTFA_ALLOWED_CONFIG_KEYS = new Set([
   "paginationToken",
   "encoding",
   "maxSupportedTransactionVersion",
+  // Helius supports `tokenAccounts` at the top level. We also support the
+  // legacy `filters.tokenAccounts` shape for backward compatibility.
+  "tokenAccounts",
   "filters",
 ]);
 
@@ -450,6 +465,13 @@ function validateGetTransactionsForAddressConfig(config: Record<string, unknown>
     }
   }
 
+  if (
+    config.tokenAccounts !== undefined
+    && !GTFA_TOKEN_ACCOUNT_FILTERS.includes(config.tokenAccounts as (typeof GTFA_TOKEN_ACCOUNT_FILTERS)[number])
+  ) {
+    return `getTransactionsForAddress tokenAccounts must be one of: ${GTFA_TOKEN_ACCOUNT_FILTERS.join(", ")}.`;
+  }
+
   if (config.filters !== undefined) {
     if (!isPlainObject(config.filters)) {
       return "getTransactionsForAddress filters must be an object.";
@@ -513,6 +535,10 @@ function validateGetTransactionsForAddressConfig(config: Record<string, unknown>
     ) {
       return `getTransactionsForAddress filters.tokenAccounts must be one of: ${GTFA_TOKEN_ACCOUNT_FILTERS.join(", ")}.`;
     }
+  }
+
+  if (config.tokenAccounts !== undefined && config.filters?.tokenAccounts !== undefined) {
+    return "getTransactionsForAddress tokenAccounts must be provided either at top level or in filters.tokenAccounts, not both.";
   }
 
   return null;
@@ -683,10 +709,10 @@ export function buildCatalogEntries(config: GatewayConfig, routes: RouteSpec[]):
     ...(route.authNetworks ? { authNetworks: route.authNetworks } : {}),
     ...(route.paymentRequired
       ? {
-        paymentNetwork: config.paymentNetwork,
+        paymentNetwork: routePaymentNetwork(config, route),
         paymentAsset: {
           symbol: config.paymentAssetSymbol,
-          mint: config.usdcMint,
+          mint: routePaymentMint(config, route),
           decimals: config.paymentAssetDecimals,
         },
       }

@@ -77,50 +77,6 @@ export interface CatalogProviderEntry {
   href: string;
 }
 
-export interface PaymentAsset {
-  address: string;
-  symbol: string;
-  decimals: number;
-}
-
-export interface PaymentRequirement {
-  scheme: "exact";
-  network: string;
-  maxAmountRequired: string;
-  resource: string;
-  description: string;
-  mimeType: string;
-  payTo: string;
-  asset: PaymentAsset;
-  facilitator: {
-    url: string;
-  };
-  outputSchema?: Record<string, unknown>;
-  extensions?: Record<string, unknown>;
-}
-
-export interface PaymentRequiredEnvelope {
-  x402Version: 2;
-  accepts: PaymentRequirement[];
-}
-
-export interface SettlementResponse {
-  success: boolean;
-  network: string;
-  transaction?: string;
-  payer?: string;
-  error?: string;
-  settledAt?: string;
-}
-
-export interface VerificationResult {
-  success: boolean;
-  error?: string;
-  payer?: string;
-  amountAtomic?: string;
-  settlementCacheKey?: string;
-}
-
 export interface UpstreamResult {
   result: unknown;
   status: number;
@@ -147,16 +103,17 @@ export interface EventRecord {
 export interface GatewayConfig {
   port: number;
   baseUrl: string;
-  cdpApiKeyId?: string;
-  cdpApiKeySecret?: string;
   facilitatorWalletBase58?: string;
   internalSettlementSecret?: string;
   payToWallet: string;
-  usdcMint: string;
-  paymentNetwork: string;
+  mainnetUsdcMint: string;
+  devnetUsdcMint: string;
+  mainnetPaymentNetwork: `${string}:${string}`;
+  devnetPaymentNetwork: `${string}:${string}`;
   paymentAssetSymbol: string;
   paymentAssetDecimals: number;
   solanaMainnetRpcUrl: string;
+  solanaDevnetRpcUrl: string;
   alchemyMainnetRpcUrl: string;
   alchemyDevnetRpcUrl: string;
   heliusMainnetRpcUrl: string;
@@ -171,9 +128,4 @@ export interface GatewayConfig {
   challengeRateLimitPerMinute: number;
   upstashRedisRestUrl: string;
   upstashRedisRestToken: string;
-}
-
-export interface RequestContext {
-  requestId: string;
-  startedAtMs: number;
 }

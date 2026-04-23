@@ -13,7 +13,9 @@ for (const candidate of [".env.local", ".env"]) {
 }
 
 const SOLANA_MAINNET_CAIP2 = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+const SOLANA_DEVNET_CAIP2 = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 const MAINNET_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const DEVNET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 
 function readOptionalString(name: string, fallback?: string): string | undefined {
   const value = process.env[name] ?? fallback;
@@ -40,23 +42,55 @@ function readNumber(name: string, fallback?: string): number {
   return parsed;
 }
 
+function assertUsdcMint(
+  usdcMint: string,
+  expectedMint: string,
+  envName: string,
+  networkLabel: "mainnet" | "devnet",
+): string {
+  if (usdcMint !== expectedMint) {
+    throw new Error(
+      [
+        `Invalid ${envName}.`,
+        `Expected ${networkLabel} USDC mint (${expectedMint})`,
+        `but received (${usdcMint}).`,
+        `This gateway only supports canonical ${networkLabel} USDC settlement.`,
+      ].join(" ")
+    );
+  }
+  return usdcMint;
+}
+
 export function loadConfig(): GatewayConfig {
   const vercelUrl = readOptionalString("VERCEL_URL");
   const baseUrlFallback = vercelUrl ? `https://${vercelUrl}` : "http://localhost:8080";
+  const mainnetUsdcMint = assertUsdcMint(
+    readString("AGON_X402_MAINNET_USDC_MINT", process.env.AGON_X402_USDC_MINT ?? MAINNET_USDC_MINT),
+    MAINNET_USDC_MINT,
+    "AGON_X402_MAINNET_USDC_MINT",
+    "mainnet",
+  );
+  const devnetUsdcMint = assertUsdcMint(
+    readString("AGON_X402_DEVNET_USDC_MINT", DEVNET_USDC_MINT),
+    DEVNET_USDC_MINT,
+    "AGON_X402_DEVNET_USDC_MINT",
+    "devnet",
+  );
 
   return {
     port: readNumber("PORT", "8080"),
     baseUrl: readString("AGON_GATEWAY_BASE_URL", baseUrlFallback),
-    cdpApiKeyId: readOptionalString("CDP_API_KEY_ID"),
-    cdpApiKeySecret: readOptionalString("CDP_API_KEY_SECRET"),
     facilitatorWalletBase58: readOptionalString("AGON_FACILITATOR_WALLET_BASE58"),
     internalSettlementSecret: readOptionalString("AGON_INTERNAL_SETTLEMENT_SECRET"),
     payToWallet: readString("AGON_X402_PAY_TO_WALLET", process.env.AGON_GATEWAY_PAYEE_WALLET),
-    usdcMint: readString("AGON_X402_USDC_MINT", MAINNET_USDC_MINT),
-    paymentNetwork: SOLANA_MAINNET_CAIP2,
+    mainnetUsdcMint,
+    devnetUsdcMint,
+    mainnetPaymentNetwork: SOLANA_MAINNET_CAIP2,
+    devnetPaymentNetwork: SOLANA_DEVNET_CAIP2,
     paymentAssetSymbol: "USDC",
     paymentAssetDecimals: 6,
     solanaMainnetRpcUrl: readString("SOLANA_MAINNET_RPC_URL", "https://api.mainnet-beta.solana.com"),
+    solanaDevnetRpcUrl: readString("SOLANA_DEVNET_RPC_URL", "https://api.devnet.solana.com"),
     alchemyMainnetRpcUrl: readString("ALCHEMY_MAINNET_RPC_URL"),
     alchemyDevnetRpcUrl: readString("ALCHEMY_DEVNET_RPC_URL"),
     heliusMainnetRpcUrl: readString("HELIUS_MAINNET_RPC_URL"),

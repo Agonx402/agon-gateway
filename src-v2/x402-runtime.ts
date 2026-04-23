@@ -17,7 +17,7 @@ import {
   siwxResourceServerExtension,
 } from "@x402/extensions/sign-in-with-x";
 import { NextAdapter } from "@x402/next";
-import { SOLANA_MAINNET_CAIP2, toFacilitatorSvmSigner } from "@x402/svm";
+import { SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2, toFacilitatorSvmSigner } from "@x402/svm";
 import { registerExactSvmScheme as registerExactSvmFacilitatorScheme } from "@x402/svm/exact/facilitator";
 import { registerExactSvmScheme as registerExactSvmServerScheme } from "@x402/svm/exact/server";
 import { NextRequest, NextResponse } from "next/server";
@@ -148,6 +148,18 @@ const ACCESS_CONTROL_EXPOSE_HEADERS = [
   "PAYMENT-RESPONSE",
 ].join(", ");
 
+function routePaymentNetwork(config: GatewayConfig, route: RouteSpec): `${string}:${string}` {
+  return route.cluster === "devnet"
+    ? config.devnetPaymentNetwork
+    : config.mainnetPaymentNetwork;
+}
+
+function routePaymentMint(config: GatewayConfig, route: RouteSpec): string {
+  return route.cluster === "devnet"
+    ? config.devnetUsdcMint
+    : config.mainnetUsdcMint;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -168,7 +180,7 @@ function buildDiscoveryExtension(config: GatewayConfig, route: RouteSpec) {
 
   if (route.paymentRequired) {
     outputExample.priceUsd = route.priceUsd;
-    outputExample.paymentNetwork = config.paymentNetwork;
+    outputExample.paymentNetwork = routePaymentNetwork(config, route);
   }
 
   const output = {
@@ -234,7 +246,7 @@ function buildRoutesConfig(config: GatewayConfig, routes: RouteSpec[]): RoutesCo
         accepts: {
           scheme: "exact",
           price: paymentPrice,
-          network: SOLANA_MAINNET_CAIP2,
+          network: routePaymentNetwork(config, route),
           payTo: config.payToWallet,
         },
         resource: resourceUrl,
@@ -395,8 +407,8 @@ function eventBase(config: GatewayConfig, route?: RouteSpec): Omit<EventRecord, 
     method: route.method,
     ...(route.paymentRequired
       ? {
-        paymentNetwork: config.paymentNetwork,
-        paymentAsset: config.usdcMint,
+        paymentNetwork: routePaymentNetwork(config, route),
+        paymentAsset: routePaymentMint(config, route),
         priceUsd: route.priceUsd,
       }
       : {}),
@@ -467,6 +479,10 @@ async function createFacilitatorRuntime(): Promise<FacilitatorRuntime> {
     signer: toFacilitatorSvmSigner(facilitatorSigner, { defaultRpcUrl: config.solanaMainnetRpcUrl }),
     networks: SOLANA_MAINNET_CAIP2,
   });
+  registerExactSvmFacilitatorScheme(facilitator, {
+    signer: toFacilitatorSvmSigner(facilitatorSigner, { defaultRpcUrl: config.solanaDevnetRpcUrl }),
+    networks: SOLANA_DEVNET_CAIP2,
+  });
 
   return {
     config,
@@ -518,7 +534,7 @@ async function createRuntime(): Promise<GatewayRuntime> {
 
   const resourceServer = new x402ResourceServer(facilitatorClient);
   registerExactSvmServerScheme(resourceServer, {
-    networks: [SOLANA_MAINNET_CAIP2],
+    networks: [SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2],
   });
   resourceServer.registerExtension(bazaarResourceServerExtension);
   resourceServer.registerExtension(siwxResourceServerExtension);
@@ -617,11 +633,16 @@ export async function handleCatalogRequest(request?: NextRequest): Promise<NextR
     version: 1,
     payment: {
       modes: ["exact", "siwx"],
-      network: runtime.config.paymentNetwork,
+      network: runtime.config.mainnetPaymentNetwork,
+      networks: [runtime.config.mainnetPaymentNetwork, runtime.config.devnetPaymentNetwork],
       pricingModel: runtime.catalog.some((route) => route.accessMode === "siwx") ? "mixed" : "per-route",
       asset: {
         symbol: runtime.config.paymentAssetSymbol,
-        mint: runtime.config.usdcMint,
+        mint: runtime.config.mainnetUsdcMint,
+        mints: {
+          mainnet: runtime.config.mainnetUsdcMint,
+          devnet: runtime.config.devnetUsdcMint,
+        },
         decimals: runtime.config.paymentAssetDecimals,
       },
     },
@@ -1313,7 +1334,7 @@ export async function handlePaidRouteRequest(request: NextRequest): Promise<Next
       surface: route.surface,
       method: route.method,
       ...(route.priceUsd ? { priceUsd: route.priceUsd } : {}),
-      paymentNetwork: runtime.config.paymentNetwork,
+      paymentNetwork: routePaymentNetwork(runtime.config, route),
       result: upstream.result,
     },
     {
