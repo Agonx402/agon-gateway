@@ -65,7 +65,7 @@ export function loadConfig(): GatewayConfig {
   const vercelUrl = readOptionalString("VERCEL_URL");
   const baseUrlFallback = vercelUrl ? `https://${vercelUrl}` : "http://localhost:8080";
   const mainnetUsdcMint = assertUsdcMint(
-    readString("AGON_X402_MAINNET_USDC_MINT", process.env.AGON_X402_USDC_MINT ?? MAINNET_USDC_MINT),
+    readString("AGON_X402_MAINNET_USDC_MINT", MAINNET_USDC_MINT),
     MAINNET_USDC_MINT,
     "AGON_X402_MAINNET_USDC_MINT",
     "mainnet",
