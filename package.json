@@ -3,12 +3,14 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "build": "next build",
+    "build": "next build --webpack",
     "check": "tsc --noEmit -p tsconfig.json",
     "dev": "next dev",
     "start": "next start"
   },
   "dependencies": {
+    "@agonx402/sdk": "^0.2.0",
+    "@coral-xyz/anchor": "^0.32.1",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "@upstash/redis": "^1.37.0",

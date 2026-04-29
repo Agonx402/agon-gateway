@@ -1,5 +1,7 @@
 import { buildHeliusWalletRouteCatalog, validateHeliusWalletRouteParams } from "./helius-wallet-routes";
 import { buildTokensRouteCatalog, validateTokensRouteParams } from "./tokens-routes";
+import { deriveMessageDomain } from "@agonx402/sdk";
+import { PublicKey } from "@solana/web3.js";
 import type {
   CatalogRouteEntry,
   ClusterName,
@@ -26,6 +28,48 @@ function routePaymentMint(config: GatewayConfig, route: RouteSpec): string {
   return route.cluster === "devnet"
     ? config.devnetUsdcMint
     : config.mainnetUsdcMint;
+}
+
+function hasAgonChannelConfig(config: GatewayConfig): boolean {
+  return Boolean(
+    config.agonProtocolProgramId
+      && config.agonProtocolDevnetUsdcTokenId !== undefined
+      && config.agonMerchantOwner
+      && config.agonMerchantParticipantId !== undefined,
+  );
+}
+
+function priceUsdToTokenAmount(priceUsd: string): string {
+  const [wholeRaw, fractionalRaw = ""] = priceUsd.replace(/^\$/, "").split(".");
+  const whole = wholeRaw.length > 0 ? wholeRaw : "0";
+  const fractional = fractionalRaw.padEnd(6, "0").slice(0, 6);
+  return `${whole}.${fractional}`;
+}
+
+function withAgonChannelMetadata(config: GatewayConfig, route: RouteSpec): RouteSpec {
+  if (!hasAgonChannelConfig(config)) {
+    throw new Error("Agon channel routes require protocol and merchant config.");
+  }
+
+  const programId = new PublicKey(config.agonProtocolProgramId!);
+  const messageDomain = deriveMessageDomain(programId, config.agonChainId).toString("base64");
+  const priceTokenAmount = priceUsdToTokenAmount(route.priceUsd ?? "0");
+
+  return {
+    ...route,
+    accessMode: "agon-channel",
+    priceUsd: undefined,
+    priceTokenAmount,
+    tokenSymbol: "USDC",
+    tokenDecimals: 6,
+    tokenMint: config.devnetUsdcMint,
+    tokenId: config.agonProtocolDevnetUsdcTokenId,
+    programId: programId.toBase58(),
+    merchantOwner: config.agonMerchantOwner,
+    merchantParticipantId: config.agonMerchantParticipantId,
+    messageVersion: config.agonMessageVersion,
+    messageDomain,
+  };
 }
 
 interface SolanaMethodSpec {
@@ -694,6 +738,49 @@ export function buildRouteCatalog(config: GatewayConfig): RouteSpec[] {
   return routes;
 }
 
+export function buildAgonChannelRouteCatalog(config: GatewayConfig): RouteSpec[] {
+  if (!hasAgonChannelConfig(config)) {
+    return [];
+  }
+
+  const routes: RouteSpec[] = [];
+  const cluster: ClusterName = "devnet";
+
+  for (const provider of PROVIDERS) {
+    for (const rpc of RPC_METHODS) {
+      if (!methodSupportsProvider(rpc, provider)) continue;
+      if (!isRouteSupported(cluster, provider, "rpc")) continue;
+      const source = buildSolanaRouteSpec(config, cluster, provider, "rpc", rpc.method, rpc.description);
+      routes.push(withAgonChannelMetadata(config, {
+        ...source,
+        path: source.path.replace("/v1/x402/solana/devnet", "/v1/agon-channel/solana/devnet"),
+      }));
+    }
+
+    for (const das of DAS_METHODS) {
+      if (!methodSupportsProvider(das, provider)) continue;
+      if (!isRouteSupported(cluster, provider, "das")) continue;
+      const source = buildSolanaRouteSpec(config, cluster, provider, "das", das.method, das.description);
+      routes.push(withAgonChannelMetadata(config, {
+        ...source,
+        path: source.path.replace("/v1/x402/solana/devnet", "/v1/agon-channel/solana/devnet"),
+      }));
+    }
+  }
+
+  for (const route of buildHeliusWalletRouteCatalog(config)) {
+    if (route.cluster !== "devnet") {
+      continue;
+    }
+    routes.push(withAgonChannelMetadata(config, {
+      ...route,
+      path: route.path.replace("/v1/x402/helius/devnet/wallet", "/v1/agon-channel/helius/devnet/wallet"),
+    }));
+  }
+
+  return routes;
+}
+
 export function buildCatalogEntries(config: GatewayConfig, routes: RouteSpec[]): CatalogRouteEntry[] {
   return routes.map((route) => ({
     path: route.path,
@@ -706,6 +793,16 @@ export function buildCatalogEntries(config: GatewayConfig, routes: RouteSpec[]):
     accessMode: route.accessMode,
     paymentRequired: route.paymentRequired,
     ...(route.priceUsd ? { priceUsd: route.priceUsd } : {}),
+    ...(route.priceTokenAmount ? { priceTokenAmount: route.priceTokenAmount } : {}),
+    ...(route.tokenSymbol ? { tokenSymbol: route.tokenSymbol } : {}),
+    ...(route.tokenDecimals !== undefined ? { tokenDecimals: route.tokenDecimals } : {}),
+    ...(route.tokenMint ? { tokenMint: route.tokenMint } : {}),
+    ...(route.tokenId !== undefined ? { tokenId: route.tokenId } : {}),
+    ...(route.programId ? { programId: route.programId } : {}),
+    ...(route.merchantOwner ? { merchantOwner: route.merchantOwner } : {}),
+    ...(route.merchantParticipantId !== undefined ? { merchantParticipantId: route.merchantParticipantId } : {}),
+    ...(route.messageVersion !== undefined ? { messageVersion: route.messageVersion } : {}),
+    ...(route.messageDomain ? { messageDomain: route.messageDomain } : {}),
     ...(route.authNetworks ? { authNetworks: route.authNetworks } : {}),
     ...(route.paymentRequired
       ? {

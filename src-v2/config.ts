@@ -1,4 +1,4 @@
-﻿import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import dotenv from "dotenv";
 import type { GatewayConfig } from "./types";
@@ -42,6 +42,69 @@ function readNumber(name: string, fallback?: string): number {
   return parsed;
 }
 
+function readOptionalNumber(name: string, fallback?: string): number | undefined {
+  const value = readOptionalString(name, fallback);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Environment variable ${name} must be a positive number.`);
+  }
+  return parsed;
+}
+
+function readPositiveInteger(name: string, fallback?: string): number {
+  const parsed = readNumber(name, fallback);
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`Environment variable ${name} must be an integer.`);
+  }
+  return parsed;
+}
+
+function readOptionalPositiveInteger(name: string, fallback?: string): number | undefined {
+  const parsed = readOptionalNumber(name, fallback);
+  if (parsed === undefined) {
+    return undefined;
+  }
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`Environment variable ${name} must be an integer.`);
+  }
+  return parsed;
+}
+
+function readOptionalU16(name: string): number | undefined {
+  const value = readOptionalString(name);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) {
+    throw new Error(`Environment variable ${name} must be an integer between 0 and 65535.`);
+  }
+  return parsed;
+}
+
+function readDevnetDeploymentTokenId(): number | undefined {
+  const configPath = readOptionalString("AGON_PROTOCOL_DEVNET_DEPLOYMENT_CONFIG");
+  if (!configPath || !existsSync(configPath)) {
+    return undefined;
+  }
+
+  const parsed = JSON.parse(readFileSync(configPath, "utf8")) as {
+    tokens?: Array<{ id?: number; tokenId?: number; mint?: string }>;
+  };
+  const token = parsed.tokens?.find((entry) => entry.mint === DEVNET_USDC_MINT);
+  const tokenId = token?.id ?? token?.tokenId;
+  if (tokenId === undefined) {
+    return undefined;
+  }
+  if (!Number.isInteger(tokenId) || tokenId < 0 || tokenId > 65_535) {
+    throw new Error("Devnet deployment config contains an invalid USDC token ID.");
+  }
+  return tokenId;
+}
+
 function assertUsdcMint(
   usdcMint: string,
   expectedMint: string,
@@ -55,7 +118,7 @@ function assertUsdcMint(
         `Expected ${networkLabel} USDC mint (${expectedMint})`,
         `but received (${usdcMint}).`,
         `This gateway only supports canonical ${networkLabel} USDC settlement.`,
-      ].join(" ")
+      ].join(" "),
     );
   }
   return usdcMint;
@@ -76,6 +139,9 @@ export function loadConfig(): GatewayConfig {
     "AGON_X402_DEVNET_USDC_MINT",
     "devnet",
   );
+  const agonProtocolDevnetUsdcTokenId = readOptionalU16(
+    "AGON_PROTOCOL_DEVNET_USDC_TOKEN_ID",
+  ) ?? readDevnetDeploymentTokenId();
 
   return {
     port: readNumber("PORT", "8080"),
@@ -104,6 +170,16 @@ export function loadConfig(): GatewayConfig {
     tokensRateLimitPerMinute: readNumber("AGON_RATE_LIMIT_TOKENS_PER_MINUTE", "30"),
     challengeRateLimitPerMinute: readNumber("AGON_RATE_LIMIT_CHALLENGE_PER_MINUTE", "120"),
     upstashRedisRestUrl: readString("UPSTASH_REDIS_REST_URL"),
-    upstashRedisRestToken: readString("UPSTASH_REDIS_REST_TOKEN")
+    upstashRedisRestToken: readString("UPSTASH_REDIS_REST_TOKEN"),
+    agonProtocolProgramId: readOptionalString("AGON_PROTOCOL_PROGRAM_ID"),
+    agonProtocolDevnetUsdcTokenId,
+    agonMerchantOwner: readOptionalString("AGON_GATEWAY_MERCHANT_OWNER"),
+    agonMerchantParticipantId: readOptionalPositiveInteger("AGON_GATEWAY_MERCHANT_PARTICIPANT_ID"),
+    agonMessageVersion: readPositiveInteger("AGON_PROTOCOL_MESSAGE_VERSION", "1"),
+    agonChainId: readPositiveInteger("AGON_PROTOCOL_DEVNET_CHAIN_ID", "1"),
+    agonChannelSnapshotTtlMs: readPositiveInteger("AGON_CHANNEL_SNAPSHOT_TTL_MS", "2000"),
+    agonChannelSettlementMinDelta: readString("AGON_CHANNEL_SETTLEMENT_MIN_DELTA", "0.250000"),
+    agonChannelSettlementMaxAgeSeconds: readPositiveInteger("AGON_CHANNEL_SETTLEMENT_MAX_AGE_SECONDS", "300"),
+    agonChannelSettlementMinHeadroomBps: readPositiveInteger("AGON_CHANNEL_SETTLEMENT_MIN_HEADROOM_BPS", "1000"),
   };
 }

@@ -5,6 +5,7 @@ Agon Gateway is a Vercel-ready x402 gateway for paid Solana RPC/DAS routes and w
 This version is intentionally narrow and safe:
 
 - standard x402 `exact` flow for paid infrastructure routes
+- Agon Protocol payment-channel flow for devnet infrastructure routes
 - SIWX auth-only x402 flow for Tokens API routes
 - self-hosted facilitator for standard x402 verification + settlement
 - Solana mainnet USDC settlement
@@ -12,15 +13,18 @@ This version is intentionally narrow and safe:
 - Tokens API v1 proxying with server-side `x-api-key` auth and wallet signatures instead of end-user API keys
 - replay protection and rate limiting backed by Upstash Redis
 - internal self-hosted facilitator endpoints protected by a shared secret
-- no Agon-native payment flow yet
+- official devnet USDC for Agon channel-backed routes
 
 ## Public routes
 
 - `GET /healthz`
 - `GET /v1/catalog`
 - `POST /v1/x402/solana/{cluster}/{provider}/{surface}/{method}`
+- `POST /v1/agon-channel/solana/devnet/{provider}/{surface}/{method}`
 - `GET /v1/x402/helius/wallet/...`
 - `POST /v1/x402/helius/wallet/batch-identity`
+- `GET /v1/agon-channel/helius/devnet/wallet/...`
+- `POST /v1/agon-channel/helius/devnet/wallet/batch-identity`
 - `GET /v1/x402/tokens/...`
 - `POST /v1/x402/tokens/assets/market-snapshots`
 
@@ -137,6 +141,14 @@ Tokens API routes use SIWX auth-only x402:
 4. verify the wallet signature
 5. call the upstream Tokens API and serve the response
 
+Agon channel routes use signed cumulative commitments:
+
+1. lock official devnet USDC into a directed Agon channel to the gateway merchant
+2. read the `agon-channel` catalog metadata, including `priceTokenAmount`, `tokenId`, `programId`, `merchantParticipantId`, and `messageDomain`
+3. send the request with `X-Agon-Request-Id` and `AGON-COMMITMENT`
+4. the gateway verifies the commitment, reserves it in Redis, calls upstream, then promotes or releases the reservation
+5. gateway settlement uses Agon `settleCommitmentBundle`
+
 Current payment rail:
 
 - network: `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`
@@ -145,6 +157,7 @@ Current payment rail:
 - Alchemy routes use current Compute Unit pricing, rounded up to the nearest USDC micro when needed
 - Helius routes use current per-credit pricing
 - Tokens API routes: no payment, wallet-authenticated via SIWX
+- Agon channel routes: official devnet USDC only (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`)
 
 Bazaar discovery note:
 
@@ -197,6 +210,10 @@ Copy `.env.example` and set:
 - `AGON_RATE_LIMIT_TOKENS_PER_MINUTE`
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
+- `AGON_PROTOCOL_PROGRAM_ID`
+- `AGON_PROTOCOL_DEVNET_USDC_TOKEN_ID`
+- `AGON_GATEWAY_MERCHANT_OWNER`
+- `AGON_GATEWAY_MERCHANT_PARTICIPANT_ID`
 
 Optional legacy config if you still want to keep CDP auth material around for other tooling:
 
@@ -238,7 +255,7 @@ Recommended rollout:
 - `catalog.returnedRoutes`
 - `catalog.filters.provider`
 - `categories.providers[]` with labels, counts, and provider-specific `href`s
-- per-route `accessMode` values (`exact` for paid Solana routes, `siwx` for Tokens routes)
+- per-route `accessMode` values (`exact` for x402 routes, `siwx` for Tokens routes, `agon-channel` for Agon channel-backed routes)
 
 That lets clients either:
 

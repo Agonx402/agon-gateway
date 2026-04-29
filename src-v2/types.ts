@@ -10,7 +10,7 @@ export type RouteKind =
   | "tokens-body"
   | "helius-wallet-query"
   | "helius-wallet-body";
-export type RouteAccessMode = "exact" | "siwx";
+export type RouteAccessMode = "exact" | "siwx" | "agon-channel";
 
 export interface RouteSpec {
   path: string;
@@ -29,6 +29,16 @@ export interface RouteSpec {
   inputExample: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   priceUsd?: string;
+  priceTokenAmount?: string;
+  tokenSymbol?: string;
+  tokenDecimals?: number;
+  tokenMint?: string;
+  tokenId?: number;
+  programId?: string;
+  merchantOwner?: string;
+  merchantParticipantId?: number;
+  messageVersion?: number;
+  messageDomain?: string;
   authNetworks?: string[];
   upstreamPath: string;
   requiresUpstreamAuth: boolean;
@@ -55,6 +65,16 @@ export interface CatalogRouteEntry {
   accessMode: RouteAccessMode;
   paymentRequired: boolean;
   priceUsd?: string;
+  priceTokenAmount?: string;
+  tokenSymbol?: string;
+  tokenDecimals?: number;
+  tokenMint?: string;
+  tokenId?: number;
+  programId?: string;
+  merchantOwner?: string;
+  merchantParticipantId?: number;
+  messageVersion?: number;
+  messageDomain?: string;
   authNetworks?: string[];
   paymentNetwork?: string;
   paymentAsset?: {
@@ -128,4 +148,14 @@ export interface GatewayConfig {
   challengeRateLimitPerMinute: number;
   upstashRedisRestUrl: string;
   upstashRedisRestToken: string;
+  agonProtocolProgramId?: string;
+  agonProtocolDevnetUsdcTokenId?: number;
+  agonMerchantOwner?: string;
+  agonMerchantParticipantId?: number;
+  agonMessageVersion: number;
+  agonChainId: number;
+  agonChannelSnapshotTtlMs: number;
+  agonChannelSettlementMinDelta: string;
+  agonChannelSettlementMaxAgeSeconds: number;
+  agonChannelSettlementMinHeadroomBps: number;
 }

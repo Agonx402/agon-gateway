@@ -1,4 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
+import * as anchor from "@coral-xyz/anchor";
+import {
+  AgonClient,
+  OFFICIAL_DEVNET_USDC_MINT,
+  calculateChannelHeadroom,
+  deriveMessageDomain,
+  findChannelPda,
+  verifyGatewayCommitmentEnvelope,
+} from "@agonx402/sdk";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
 import {
   type HTTPAdapter,
@@ -21,7 +31,7 @@ import { SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2, toFacilitatorSvmSigner } fro
 import { registerExactSvmScheme as registerExactSvmFacilitatorScheme } from "@x402/svm/exact/facilitator";
 import { registerExactSvmScheme as registerExactSvmServerScheme } from "@x402/svm/exact/server";
 import { NextRequest, NextResponse } from "next/server";
-import { buildCatalogEntries, buildRouteCatalog, resolveRoute, resolveRouteByPath, validateRouteParams } from "./catalog";
+import { buildAgonChannelRouteCatalog, buildCatalogEntries, buildRouteCatalog, resolveRoute, resolveRouteByPath, validateRouteParams } from "./catalog";
 import { loadConfig } from "./config";
 import { loadFacilitatorSigner } from "./facilitator-wallet";
 import { HostedGatewayState } from "./hosted-state";
@@ -41,6 +51,7 @@ interface GatewayRuntime {
   config: GatewayConfig;
   state: HostedGatewayState;
   routes: RouteSpec[];
+  agonChannelRoutes: RouteSpec[];
   catalog: CatalogRouteEntry[];
   httpServer: x402HTTPResourceServer;
 }
@@ -124,6 +135,7 @@ class CachedNextAdapter implements HTTPAdapter {
 
 let runtimePromise: Promise<GatewayRuntime> | null = null;
 let facilitatorRuntimePromise: Promise<FacilitatorRuntime> | null = null;
+const agonChannelSnapshotCache = new Map<string, { fetchedAt: number; channel: any }>();
 
 const PROVIDER_LABELS: Record<CatalogRouteEntry["provider"], string> = {
   alchemy: "Alchemy",
@@ -133,6 +145,8 @@ const PROVIDER_LABELS: Record<CatalogRouteEntry["provider"], string> = {
 
 const ACCESS_CONTROL_ALLOW_HEADERS = [
   "Content-Type",
+  "AGON-COMMITMENT",
+  "X-Agon-Request-Id",
   "PAYMENT-SIGNATURE",
   "X-PAYMENT",
   "X-PAYMENT-RESPONSE",
@@ -540,6 +554,7 @@ async function createRuntime(): Promise<GatewayRuntime> {
   resourceServer.registerExtension(siwxResourceServerExtension);
 
   const routes = buildRouteCatalog(config);
+  const agonChannelRoutes = buildAgonChannelRouteCatalog(config);
   const httpServer = new x402HTTPResourceServer(resourceServer, buildRoutesConfig(config, routes))
     .onProtectedRequest(createSIWxRequestHook({ storage: state }));
   await httpServer.initialize();
@@ -548,7 +563,8 @@ async function createRuntime(): Promise<GatewayRuntime> {
     config,
     state,
     routes,
-    catalog: buildCatalogEntries(config, routes),
+    agonChannelRoutes,
+    catalog: buildCatalogEntries(config, [...routes, ...agonChannelRoutes]),
     httpServer,
   };
 }
@@ -632,7 +648,9 @@ export async function handleCatalogRequest(request?: NextRequest): Promise<NextR
     ok: true,
     version: 1,
     payment: {
-      modes: ["exact", "siwx"],
+      modes: runtime.agonChannelRoutes.length > 0
+        ? ["exact", "siwx", "agon-channel"]
+        : ["exact", "siwx"],
       network: runtime.config.mainnetPaymentNetwork,
       networks: [runtime.config.mainnetPaymentNetwork, runtime.config.devnetPaymentNetwork],
       pricingModel: runtime.catalog.some((route) => route.accessMode === "siwx") ? "mixed" : "per-route",
@@ -1034,6 +1052,387 @@ async function handleGrantedRouteRequest(
     {
       status: 200,
     },
+  );
+}
+
+function agonCommitmentHeader(request: NextRequest): string | undefined {
+  return request.headers.get("AGON-COMMITMENT")
+    ?? request.headers.get("agon-commitment")
+    ?? undefined;
+}
+
+function agonRequestIdHeader(request: NextRequest): string | undefined {
+  return request.headers.get("X-Agon-Request-Id")
+    ?? request.headers.get("x-agon-request-id")
+    ?? undefined;
+}
+
+function parseTokenAmountToUnits(value: string, decimals = 6): bigint {
+  const normalized = value.trim();
+  const [wholeRaw, fractionalRaw = ""] = normalized.split(".");
+  if (!/^\d+$/.test(wholeRaw || "0") || !/^\d*$/.test(fractionalRaw)) {
+    throw new Error(`Invalid token amount: ${value}`);
+  }
+  const fractional = fractionalRaw.padEnd(decimals, "0").slice(0, decimals);
+  return BigInt(wholeRaw || "0") * (10n ** BigInt(decimals)) + BigInt(fractional || "0");
+}
+
+function maxBigInt(left: bigint, right: bigint): bigint {
+  return left > right ? left : right;
+}
+
+function createReadOnlyAgonClient(config: GatewayConfig): AgonClient {
+  if (!config.agonProtocolProgramId) {
+    throw new Error("AGON_PROTOCOL_PROGRAM_ID is required for Agon channel routes.");
+  }
+
+  const connection = new Connection(config.solanaDevnetRpcUrl, "confirmed");
+  const readOnlyWallet = {
+    publicKey: PublicKey.default,
+    signTransaction: async () => {
+      throw new Error("Agon Gateway channel authorization is read-only.");
+    },
+    signAllTransactions: async () => {
+      throw new Error("Agon Gateway channel authorization is read-only.");
+    },
+  };
+  const provider = new anchor.AnchorProvider(connection, readOnlyWallet, {
+    commitment: "confirmed",
+    preflightCommitment: "confirmed",
+  });
+
+  return new AgonClient({
+    provider,
+    programId: new PublicKey(config.agonProtocolProgramId),
+  });
+}
+
+async function fetchAgonChannelState(
+  runtime: GatewayRuntime,
+  channelState: PublicKey,
+): Promise<any> {
+  const cacheKey = channelState.toBase58();
+  const now = Date.now();
+  const cached = agonChannelSnapshotCache.get(cacheKey);
+  if (cached && now - cached.fetchedAt <= runtime.config.agonChannelSnapshotTtlMs) {
+    return cached.channel;
+  }
+
+  try {
+    const client = createReadOnlyAgonClient(runtime.config);
+    const channel = await client.fetchChannel({ channelState });
+    agonChannelSnapshotCache.set(cacheKey, { fetchedAt: now, channel });
+    return channel;
+  } catch (error) {
+    if (cached && now - cached.fetchedAt <= runtime.config.agonChannelSnapshotTtlMs) {
+      return cached.channel;
+    }
+    throw error;
+  }
+}
+
+function agonChannelError(
+  status: number,
+  error: string,
+  detail?: Record<string, unknown>,
+): NextResponse {
+  return NextResponse.json({
+    ok: false,
+    error,
+    ...(detail ? { detail } : {}),
+  }, { status });
+}
+
+function validateAgonCommitmentEnvelope(
+  runtime: GatewayRuntime,
+  route: RouteSpec,
+  envelope: string,
+  channel: any,
+): { ok: true; payload: any; committedAmount: bigint } | { ok: false; response: NextResponse } {
+  const verification = verifyGatewayCommitmentEnvelope(envelope);
+  if (!verification.ok) {
+    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: verification.error }) };
+  }
+
+  const payload = verification.payload;
+  const expectedProgramId = route.programId;
+  const expectedTokenId = route.tokenId;
+  const expectedMessageDomain = route.messageDomain
+    ?? deriveMessageDomain(new PublicKey(expectedProgramId!), runtime.config.agonChainId).toString("base64");
+
+  if (payload.cluster !== "devnet") {
+    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "cluster_mismatch" }) };
+  }
+  if (payload.programId !== expectedProgramId) {
+    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "program_mismatch" }) };
+  }
+  if (payload.messageDomain !== expectedMessageDomain) {
+    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "message_domain_mismatch" }) };
+  }
+  if (payload.tokenId !== expectedTokenId || payload.tokenMint !== OFFICIAL_DEVNET_USDC_MINT) {
+    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "token_mismatch" }) };
+  }
+  if (payload.payeeId !== route.merchantParticipantId) {
+    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "merchant_mismatch" }) };
+  }
+  if (
+    Number(channel.payerId) !== payload.payerId
+    || Number(channel.payeeId) !== payload.payeeId
+    || Number(channel.tokenId) !== payload.tokenId
+  ) {
+    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "channel_mismatch" }) };
+  }
+  if (channel.authorizedSigner?.toBase58?.() !== payload.signer) {
+    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "authorized_signer_mismatch" }) };
+  }
+
+  return {
+    ok: true,
+    payload,
+    committedAmount: BigInt(payload.committedAmount),
+  };
+}
+
+export async function handleAgonChannelRouteRequest(request: NextRequest): Promise<NextResponse> {
+  const runtime = await getGatewayRuntime();
+  const requestedMethod = requestMethod(request);
+  if (!requestedMethod) {
+    const matchedRoute = resolveRouteByPath(runtime.agonChannelRoutes, request.nextUrl.pathname);
+    const methods = matchedRoute ? allowedMethodsForRoute(matchedRoute.route) : ["OPTIONS"];
+    return finalizePublicResponse(
+      NextResponse.json({ ok: false, error: "Method not allowed." }, { status: 405 }),
+      methods,
+      request.method === "HEAD",
+    );
+  }
+
+  const resolvedRoute = resolveRoute(runtime.agonChannelRoutes, requestedMethod, request.nextUrl.pathname);
+  if (!resolvedRoute) {
+    return finalizePublicResponse(
+      NextResponse.json({ ok: false, error: "Not found." }, { status: 404 }),
+      ["OPTIONS"],
+      request.method === "HEAD",
+    );
+  }
+
+  const route = resolvedRoute.route;
+  const allowedMethods = allowedMethodsForRoute(route);
+  const requestId = agonRequestIdHeader(request);
+  const envelope = agonCommitmentHeader(request);
+  if (!requestId || !envelope) {
+    return finalizePublicResponse(
+      agonChannelError(402, "agon_commitment_required", {
+        requiredHeaders: ["X-Agon-Request-Id", "AGON-COMMITMENT"],
+        accessMode: "agon-channel",
+        priceTokenAmount: route.priceTokenAmount,
+        tokenMint: route.tokenMint,
+        tokenId: route.tokenId,
+        merchantParticipantId: route.merchantParticipantId,
+      }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  let parsedBody: ParsedRequestBody | undefined;
+  const shouldCacheBody = route.inputMode !== "query"
+    && !(route.inputMode === "solana-envelope" && (request.method === "GET" || request.method === "HEAD"));
+  if (shouldCacheBody) {
+    try {
+      parsedBody = await parseRequestBody(request);
+    } catch {
+      return finalizePublicResponse(
+        NextResponse.json({ ok: false, error: "Request body must be valid JSON." }, { status: 400 }),
+        allowedMethods,
+        requestedMethod === "HEAD",
+      );
+    }
+  }
+
+  const extractedParams = await extractRouteParams(request, resolvedRoute, true, parsedBody);
+  if ("error" in extractedParams) {
+    return finalizePublicResponse(
+      NextResponse.json({ ok: false, error: extractedParams.error }, { status: extractedParams.status }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  const decoded = verifyGatewayCommitmentEnvelope(envelope);
+  if (!decoded.ok) {
+    return finalizePublicResponse(
+      agonChannelError(402, "invalid_agon_commitment", { reason: decoded.error }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  const channelState = findChannelPda(
+    new PublicKey(route.programId!),
+    decoded.payload.payerId,
+    decoded.payload.payeeId,
+    decoded.payload.tokenId,
+  );
+
+  let channel;
+  try {
+    channel = await fetchAgonChannelState(runtime, channelState);
+  } catch (error) {
+    return finalizePublicResponse(
+      agonChannelError(503, "agon_channel_state_unavailable", {
+        reason: error instanceof Error ? error.message : "fetch_failed",
+      }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  const validated = validateAgonCommitmentEnvelope(runtime, route, envelope, channel);
+  if (!validated.ok) {
+    return finalizePublicResponse(validated.response, allowedMethods, requestedMethod === "HEAD");
+  }
+
+  const channelKey = channelState.toBase58();
+  const ledger = await runtime.state.getAgonChannelLedger(channelKey);
+  const settledCumulative = BigInt(channel.settledCumulative.toString());
+  const ledgerLatest = ledger.latestAcceptedCommitted
+    ? BigInt(ledger.latestAcceptedCommitted)
+    : settledCumulative;
+  const latestAcceptedCommitted = maxBigInt(settledCumulative, ledgerLatest);
+  const priceUnits = parseTokenAmountToUnits(route.priceTokenAmount ?? "0", route.tokenDecimals ?? 6);
+  const expectedCommittedAmount = latestAcceptedCommitted + priceUnits;
+
+  if (validated.committedAmount !== expectedCommittedAmount) {
+    return finalizePublicResponse(
+      agonChannelError(402, "invalid_agon_commitment", {
+        reason: "commitment_amount_mismatch",
+        expectedCommittedAmount: expectedCommittedAmount.toString(),
+        receivedCommittedAmount: validated.committedAmount.toString(),
+      }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  const headroom = calculateChannelHeadroom(channel, validated.committedAmount);
+  if (validated.committedAmount > headroom.maxAuthorized) {
+    return finalizePublicResponse(
+      agonChannelError(402, "insufficient_channel_headroom", {
+        maxAuthorized: headroom.maxAuthorized.toString(),
+        committedAmount: validated.committedAmount.toString(),
+      }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  const requestHash = createHash("sha256").update(`${channelKey}:${requestId}`).digest("hex");
+  const reservation = await runtime.state.reserveAgonChannelCommitment({
+    channelKey,
+    requestId,
+    requestHash,
+    baselineCommittedAmount: settledCumulative.toString(),
+    expectedPreviousCommittedAmount: latestAcceptedCommitted.toString(),
+    newCommittedAmount: validated.committedAmount.toString(),
+  });
+
+  if (!reservation.ok) {
+    if (reservation.reason === "request_replay" && reservation.state?.includes("\"accepted\"")) {
+      return finalizePublicResponse(
+        NextResponse.json({ ok: true, idempotent: true, accessMode: "agon-channel", channel: channelKey }),
+        allowedMethods,
+        requestedMethod === "HEAD",
+      );
+    }
+    return finalizePublicResponse(
+      agonChannelError(409, "agon_channel_reservation_failed", reservation as unknown as Record<string, unknown>),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  let upstream;
+  let upstreamLatencyMs = 0;
+  const upstreamStartedAt = Date.now();
+  try {
+    upstream = await forwardToUpstream(runtime.config, resolvedRoute, extractedParams.params);
+    upstreamLatencyMs = Date.now() - upstreamStartedAt;
+  } catch (error) {
+    upstreamLatencyMs = Date.now() - upstreamStartedAt;
+    await runtime.state.releaseAgonChannelCommitment({ channelKey, requestId, requestHash });
+    const failureResponse = upstreamFailureResponse(error);
+    await recordEvent(runtime.state, {
+      event: "agon_channel_upstream_failed",
+      timestamp: new Date().toISOString(),
+      requestId,
+      ...eventBase(runtime.config, route),
+      upstreamLatencyMs,
+      httpStatus: failureResponse.status,
+    }, "agon_channel_upstream_failed");
+    return finalizePublicResponse(
+      NextResponse.json(failureResponse.body, { status: failureResponse.status }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  await runtime.state.promoteAgonChannelCommitment({
+    channelKey,
+    requestId,
+    requestHash,
+    committedAmount: validated.committedAmount.toString(),
+    envelope,
+  });
+  await recordEvent(runtime.state, {
+    event: "agon_channel_access_granted",
+    timestamp: new Date().toISOString(),
+    requestId,
+    ...eventBase(runtime.config, route),
+    upstreamLatencyMs,
+    httpStatus: upstream.status,
+    detail: {
+      channel: channelKey,
+      committedAmount: validated.committedAmount.toString(),
+      priceTokenAmount: route.priceTokenAmount,
+    },
+  }, "agon_channel_access_granted");
+
+  return finalizePublicResponse(NextResponse.json({
+    ok: true,
+    provider: route.provider,
+    cluster: route.cluster,
+    surface: route.surface,
+    method: route.method,
+    accessMode: "agon-channel",
+    priceTokenAmount: route.priceTokenAmount,
+    tokenSymbol: route.tokenSymbol,
+    tokenMint: route.tokenMint,
+    channel: channelKey,
+    committedAmount: validated.committedAmount.toString(),
+    remainingHeadroom: headroom.remainingHeadroom.toString(),
+    settlement: {
+      mode: "settleCommitmentBundle",
+      minDelta: runtime.config.agonChannelSettlementMinDelta,
+      maxAgeSeconds: runtime.config.agonChannelSettlementMaxAgeSeconds,
+      minHeadroomBps: runtime.config.agonChannelSettlementMinHeadroomBps,
+    },
+    result: upstream.result,
+  }), allowedMethods, requestedMethod === "HEAD");
+}
+
+export async function handleAgonChannelRouteOptionsRequest(request: NextRequest): Promise<NextResponse> {
+  const runtime = await getGatewayRuntime();
+  const resolvedRoute = resolveRouteByPath(runtime.agonChannelRoutes, request.nextUrl.pathname);
+  if (!resolvedRoute) {
+    return finalizePublicResponse(
+      NextResponse.json({ ok: false, error: "Not found." }, { status: 404 }),
+      ["OPTIONS"],
+    );
+  }
+
+  return finalizePublicResponse(
+    new NextResponse(null, { status: 204 }),
+    allowedMethodsForRoute(resolvedRoute.route),
   );
 }
 

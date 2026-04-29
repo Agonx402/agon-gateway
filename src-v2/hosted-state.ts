@@ -11,6 +11,21 @@ export interface RateLimitOutcome {
   retryAfterSeconds: number;
 }
 
+export interface AgonChannelLedger {
+  latestAcceptedCommitted: string | null;
+  oldestUnsettledAcceptedAt: string | null;
+  inFlightRequestId: string | null;
+  inFlightCommittedAmount: string | null;
+  latestEnvelope: string | null;
+}
+
+export interface AgonChannelReservation {
+  ok: boolean;
+  state?: string;
+  latestAcceptedCommitted?: string;
+  reason?: string;
+}
+
 export class HostedGatewayState {
   private readonly redis: Redis;
 
@@ -46,6 +61,129 @@ export class HostedGatewayState {
 
   public async releaseReplay(key: string): Promise<void> {
     await this.redis.del(this.replayKey(key));
+  }
+
+  public async getAgonChannelLedger(channelKey: string): Promise<AgonChannelLedger> {
+    const ledger = await this.redis.hgetall<Record<string, string>>(this.agonChannelLedgerKey(channelKey));
+    return {
+      latestAcceptedCommitted: ledger?.latestAcceptedCommitted ?? null,
+      oldestUnsettledAcceptedAt: ledger?.oldestUnsettledAcceptedAt ?? null,
+      inFlightRequestId: ledger?.inFlightRequestId ?? null,
+      inFlightCommittedAmount: ledger?.inFlightCommittedAmount ?? null,
+      latestEnvelope: ledger?.latestEnvelope ?? null,
+    };
+  }
+
+  public async reserveAgonChannelCommitment(params: {
+    channelKey: string;
+    requestId: string;
+    requestHash: string;
+    baselineCommittedAmount: string;
+    expectedPreviousCommittedAmount: string;
+    newCommittedAmount: string;
+    ttlSeconds?: number;
+  }): Promise<AgonChannelReservation> {
+    const script = `
+local ledgerKey = KEYS[1]
+local requestKey = KEYS[2]
+local existingRequest = redis.call("GET", requestKey)
+if existingRequest then
+  return cjson.encode({ ok = false, state = existingRequest, reason = "request_replay" })
+end
+local inFlight = redis.call("HGET", ledgerKey, "inFlightRequestId")
+if inFlight then
+  return cjson.encode({ ok = false, state = inFlight, reason = "channel_busy" })
+end
+local latest = redis.call("HGET", ledgerKey, "latestAcceptedCommitted")
+if not latest then
+  latest = ARGV[1]
+end
+if latest ~= ARGV[2] then
+  return cjson.encode({ ok = false, latestAcceptedCommitted = latest, reason = "latest_mismatch" })
+end
+local reservation = cjson.encode({ state = "processing", channelKey = ARGV[6], committedAmount = ARGV[3] })
+redis.call("SET", requestKey, reservation, "EX", ARGV[4])
+redis.call("HSET", ledgerKey, "inFlightRequestId", ARGV[5], "inFlightCommittedAmount", ARGV[3], "inFlightStartedAt", ARGV[7])
+redis.call("EXPIRE", ledgerKey, 2592000)
+return cjson.encode({ ok = true, latestAcceptedCommitted = latest })
+`;
+    const raw = await (this.redis as any).eval(
+      script,
+      [this.agonChannelLedgerKey(params.channelKey), this.agonChannelRequestKey(params.requestHash)],
+      [
+        params.baselineCommittedAmount,
+        params.expectedPreviousCommittedAmount,
+        params.newCommittedAmount,
+        String(params.ttlSeconds ?? PROCESSING_TTL_SECONDS),
+        params.requestId,
+        params.channelKey,
+        String(Date.now()),
+      ],
+    );
+    return JSON.parse(String(raw)) as AgonChannelReservation;
+  }
+
+  public async promoteAgonChannelCommitment(params: {
+    channelKey: string;
+    requestId: string;
+    requestHash: string;
+    committedAmount: string;
+    envelope: string;
+  }): Promise<void> {
+    const now = String(Date.now());
+    const script = `
+local ledgerKey = KEYS[1]
+local requestKey = KEYS[2]
+local inFlight = redis.call("HGET", ledgerKey, "inFlightRequestId")
+if inFlight == ARGV[1] then
+  redis.call("HSET", ledgerKey, "latestAcceptedCommitted", ARGV[2])
+  redis.call("HSET", ledgerKey, "latestEnvelope", ARGV[6], "latestAcceptedAt", ARGV[3])
+  if not redis.call("HGET", ledgerKey, "oldestUnsettledAcceptedAt") then
+    redis.call("HSET", ledgerKey, "oldestUnsettledAcceptedAt", ARGV[3])
+  end
+  redis.call("HDEL", ledgerKey, "inFlightRequestId", "inFlightCommittedAmount", "inFlightStartedAt")
+end
+redis.call("SET", requestKey, cjson.encode({ state = "accepted", channelKey = ARGV[4], committedAmount = ARGV[2] }), "EX", ARGV[5])
+redis.call("EXPIRE", ledgerKey, 2592000)
+return "OK"
+`;
+    await (this.redis as any).eval(
+      script,
+      [this.agonChannelLedgerKey(params.channelKey), this.agonChannelRequestKey(params.requestHash)],
+      [params.requestId, params.committedAmount, now, params.channelKey, String(SETTLED_TTL_SECONDS), params.envelope],
+    );
+  }
+
+  public async releaseAgonChannelCommitment(params: {
+    channelKey: string;
+    requestId: string;
+    requestHash: string;
+  }): Promise<void> {
+    const script = `
+local ledgerKey = KEYS[1]
+local requestKey = KEYS[2]
+local inFlight = redis.call("HGET", ledgerKey, "inFlightRequestId")
+if inFlight == ARGV[1] then
+  redis.call("HDEL", ledgerKey, "inFlightRequestId", "inFlightCommittedAmount", "inFlightStartedAt")
+end
+redis.call("DEL", requestKey)
+return "OK"
+`;
+    await (this.redis as any).eval(
+      script,
+      [this.agonChannelLedgerKey(params.channelKey), this.agonChannelRequestKey(params.requestHash)],
+      [params.requestId],
+    );
+  }
+
+  public async markAgonChannelSettled(params: {
+    channelKey: string;
+    settledCumulative: string;
+  }): Promise<void> {
+    await this.redis.hset(this.agonChannelLedgerKey(params.channelKey), {
+      latestAcceptedCommitted: params.settledCumulative,
+      oldestUnsettledAcceptedAt: "",
+    });
   }
 
   public async consumeRateLimit(scope: string, limit: number, windowMs: number): Promise<RateLimitOutcome> {
@@ -95,6 +233,14 @@ export class HostedGatewayState {
 
   private replayKey(key: string): string {
     return `replay:${key}`;
+  }
+
+  private agonChannelLedgerKey(channelKey: string): string {
+    return `agon-channel:ledger:${this.hashKey(channelKey)}`;
+  }
+
+  private agonChannelRequestKey(requestHash: string): string {
+    return `agon-channel:request:${requestHash}`;
   }
 
   private siwxNonceKey(nonce: string): string {
