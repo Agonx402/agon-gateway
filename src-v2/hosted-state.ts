@@ -4,7 +4,6 @@ import type { GatewayConfig } from "./types";
 
 const PROCESSING_TTL_SECONDS = 120;
 const SETTLED_TTL_SECONDS = 86_400;
-const SIWX_NONCE_TTL_SECONDS = 60 * 10;
 
 export interface RateLimitOutcome {
   allowed: boolean;
@@ -220,16 +219,16 @@ return "OK"
     // Tokens routes are auth-only and paid routes remain pay-per-call.
   }
 
-  public async hasUsedNonce(nonce: string): Promise<boolean> {
-    const used = await this.redis.get<string>(this.siwxNonceKey(nonce));
-    return used === "used";
-  }
-
-  public async recordNonce(nonce: string): Promise<void> {
-    await this.redis.set(this.siwxNonceKey(nonce), "used", {
-      ex: SIWX_NONCE_TTL_SECONDS,
-    });
-  }
+  // Nonce tracking is intentionally NOT implemented. The optional
+  // `hasUsedNonce` / `recordNonce` methods on the x402 SIWxStorage
+  // interface, when both implemented, force every SIWX header to be
+  // single-use. Agon's Tokens routes are read-only and rely on the
+  // signed `expirationTime` (default 5 min) for replay protection,
+  // which is the same guarantee the Coinbase x402 reference server
+  // ships with by default. Leaving these methods undefined lets the
+  // SIWX hook treat valid signed headers as TTL-bounded bearers and
+  // gives clients (CLI, MCP, browser) the playground-equivalent
+  // latency the protocol was designed for.
 
   private replayKey(key: string): string {
     return `replay:${key}`;
@@ -241,10 +240,6 @@ return "OK"
 
   private agonChannelRequestKey(requestHash: string): string {
     return `agon-channel:request:${requestHash}`;
-  }
-
-  private siwxNonceKey(nonce: string): string {
-    return `siwx:nonce:${this.hashKey(nonce)}`;
   }
 
   private hashKey(input: string): string {
