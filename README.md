@@ -1,11 +1,11 @@
-# Agon Gateway
+# Ryvo Gateway
 
-Agon Gateway is a Vercel-ready x402 gateway for paid Solana RPC/DAS routes and wallet-authenticated Tokens API routes.
+Ryvo Gateway is a Vercel-ready x402 gateway for paid Solana RPC/DAS routes and wallet-authenticated Tokens API routes.
 
 This version is intentionally narrow and safe:
 
 - standard x402 `exact` flow for paid infrastructure routes
-- Agon Protocol payment-channel flow for devnet infrastructure routes
+- Ryvo Protocol payment-channel flow for devnet infrastructure routes
 - SIWX auth-only x402 flow for Tokens API routes
 - self-hosted facilitator for standard x402 verification + settlement
 - Solana mainnet USDC settlement
@@ -13,18 +13,18 @@ This version is intentionally narrow and safe:
 - Tokens API v1 proxying with server-side `x-api-key` auth and wallet signatures instead of end-user API keys
 - replay protection and rate limiting backed by Upstash Redis
 - internal self-hosted facilitator endpoints protected by a shared secret
-- official devnet USDC for Agon channel-backed routes
+- official devnet USDC for Ryvo channel-backed routes
 
 ## Public routes
 
 - `GET /healthz`
 - `GET /v1/catalog`
 - `POST /v1/x402/solana/{cluster}/{provider}/{surface}/{method}`
-- `POST /v1/agon-channel/solana/devnet/{provider}/{surface}/{method}`
+- `POST /v1/ryvo-channel/solana/devnet/{provider}/{surface}/{method}`
 - `GET /v1/x402/helius/wallet/...`
 - `POST /v1/x402/helius/wallet/batch-identity`
-- `GET /v1/agon-channel/helius/devnet/wallet/...`
-- `POST /v1/agon-channel/helius/devnet/wallet/batch-identity`
+- `GET /v1/ryvo-channel/helius/devnet/wallet/...`
+- `POST /v1/ryvo-channel/helius/devnet/wallet/batch-identity`
 - `GET /v1/x402/tokens/...`
 - `POST /v1/x402/tokens/assets/market-snapshots`
 
@@ -120,7 +120,7 @@ These are server-to-server only and must not be exposed in product docs or disco
 
 They require:
 
-- `x-agon-internal-secret: <AGON_INTERNAL_SETTLEMENT_SECRET>`
+- `x-ryvo-internal-secret: <RYVO_INTERNAL_SETTLEMENT_SECRET>`
 
 ## Access flow
 
@@ -141,13 +141,13 @@ Tokens API routes use SIWX auth-only x402:
 4. verify the wallet signature
 5. call the upstream Tokens API and serve the response
 
-Agon channel routes use signed cumulative commitments:
+Ryvo channel routes use signed cumulative commitments:
 
-1. lock official devnet USDC into a directed Agon channel to the gateway merchant
-2. read the `agon-channel` catalog metadata, including `priceTokenAmount`, `tokenId`, `programId`, `merchantParticipantId`, and `messageDomain`
-3. send the request with `X-Agon-Request-Id` and `AGON-COMMITMENT`
+1. lock official devnet USDC into a directed Ryvo channel to the gateway merchant
+2. read the `ryvo-channel` catalog metadata, including `priceTokenAmount`, `tokenId`, `programId`, `merchantParticipantId`, and `messageDomain`
+3. send the request with `X-Ryvo-Request-Id` and `RYVO-COMMITMENT`
 4. the gateway verifies the commitment, reserves it in Redis, calls upstream, then promotes or releases the reservation
-5. gateway settlement uses Agon `settleCommitmentBundle`
+5. gateway settlement uses Ryvo `settleCommitmentBundle`
 
 Current payment rail:
 
@@ -157,7 +157,7 @@ Current payment rail:
 - Alchemy routes use current Compute Unit pricing, rounded up to the nearest USDC micro when needed
 - Helius routes use current per-credit pricing
 - Tokens API routes: no payment, wallet-authenticated via SIWX
-- Agon channel routes: official devnet USDC only (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`)
+- Ryvo channel routes: official devnet USDC only (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`)
 
 Bazaar discovery note:
 
@@ -193,11 +193,12 @@ Request guardrails:
 
 Copy `.env.example` and set:
 
-- `AGON_GATEWAY_BASE_URL`
-- `AGON_FACILITATOR_WALLET_BASE58`
-- `AGON_INTERNAL_SETTLEMENT_SECRET`
-- `AGON_X402_PAY_TO_WALLET`
-- `AGON_X402_USDC_MINT`
+- `RYVO_GATEWAY_BASE_URL`
+- `RYVO_FACILITATOR_WALLET_BASE58`
+- `RYVO_INTERNAL_SETTLEMENT_SECRET`
+- `RYVO_X402_PAY_TO_WALLET`
+- `RYVO_X402_MAINNET_USDC_MINT`
+- `RYVO_X402_DEVNET_USDC_MINT`
 - `SOLANA_MAINNET_RPC_URL`
 - `ALCHEMY_MAINNET_RPC_URL`
 - `ALCHEMY_DEVNET_RPC_URL`
@@ -207,13 +208,13 @@ Copy `.env.example` and set:
 - `HELIUS_WALLET_API_BASE_URL` (defaults to `https://api.helius.xyz`)
 - `TOKENS_API_BASE_URL`
 - `TOKENS_API_KEY`
-- `AGON_RATE_LIMIT_TOKENS_PER_MINUTE`
+- `RYVO_RATE_LIMIT_TOKENS_PER_MINUTE`
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
-- `AGON_PROTOCOL_PROGRAM_ID`
-- `AGON_PROTOCOL_DEVNET_USDC_TOKEN_ID`
-- `AGON_GATEWAY_MERCHANT_OWNER`
-- `AGON_GATEWAY_MERCHANT_PARTICIPANT_ID`
+- `RYVO_PROTOCOL_PROGRAM_ID`
+- `RYVO_PROTOCOL_DEVNET_USDC_TOKEN_ID`
+- `RYVO_GATEWAY_MERCHANT_OWNER`
+- `RYVO_GATEWAY_MERCHANT_PARTICIPANT_ID`
 
 Optional legacy config if you still want to keep CDP auth material around for other tooling:
 
@@ -245,7 +246,7 @@ Recommended rollout:
 3. verify `/v1/catalog` with real env values
 4. test one unpaid `402`
 5. test one successful paid request
-6. point `gateway.agonx402.com` at the Vercel project
+6. point `gateway.ryvo.network` at the Vercel project
 
 ## Catalog shape
 
@@ -255,7 +256,7 @@ Recommended rollout:
 - `catalog.returnedRoutes`
 - `catalog.filters.provider`
 - `categories.providers[]` with labels, counts, and provider-specific `href`s
-- per-route `accessMode` values (`exact` for x402 routes, `siwx` for Tokens routes, `agon-channel` for Agon channel-backed routes)
+- per-route `accessMode` values (`exact` for x402 routes, `siwx` for Tokens routes, `ryvo-channel` for Ryvo channel-backed routes)
 
 That lets clients either:
 
@@ -264,6 +265,6 @@ That lets clients either:
 
 ## Facilitator wallet format
 
-Set `AGON_FACILITATOR_WALLET_BASE58` to the raw base58-encoded 64-byte Solana secret key for the facilitator wallet.
+Set `RYVO_FACILITATOR_WALLET_BASE58` to the raw base58-encoded 64-byte Solana secret key for the facilitator wallet.
 
 Do not paste a JSON array like `[12,34,...]` here. This value must be the base58 string itself.

@@ -86,7 +86,7 @@ function readOptionalU16(name: string): number | undefined {
 }
 
 function readDevnetDeploymentTokenId(): number | undefined {
-  const configPath = readOptionalString("AGON_PROTOCOL_DEVNET_DEPLOYMENT_CONFIG");
+  const configPath = readOptionalString("RYVO_PROTOCOL_DEVNET_DEPLOYMENT_CONFIG");
   if (!configPath || !existsSync(configPath)) {
     return undefined;
   }
@@ -128,27 +128,27 @@ export function loadConfig(): GatewayConfig {
   const vercelUrl = readOptionalString("VERCEL_URL");
   const baseUrlFallback = vercelUrl ? `https://${vercelUrl}` : "http://localhost:8080";
   const mainnetUsdcMint = assertUsdcMint(
-    readString("AGON_X402_MAINNET_USDC_MINT", MAINNET_USDC_MINT),
+    readString("RYVO_X402_MAINNET_USDC_MINT", MAINNET_USDC_MINT),
     MAINNET_USDC_MINT,
-    "AGON_X402_MAINNET_USDC_MINT",
+    "RYVO_X402_MAINNET_USDC_MINT",
     "mainnet",
   );
   const devnetUsdcMint = assertUsdcMint(
-    readString("AGON_X402_DEVNET_USDC_MINT", DEVNET_USDC_MINT),
+    readString("RYVO_X402_DEVNET_USDC_MINT", DEVNET_USDC_MINT),
     DEVNET_USDC_MINT,
-    "AGON_X402_DEVNET_USDC_MINT",
+    "RYVO_X402_DEVNET_USDC_MINT",
     "devnet",
   );
-  const agonProtocolDevnetUsdcTokenId = readOptionalU16(
-    "AGON_PROTOCOL_DEVNET_USDC_TOKEN_ID",
+  const ryvoProtocolDevnetUsdcTokenId = readOptionalU16(
+    "RYVO_PROTOCOL_DEVNET_USDC_TOKEN_ID",
   ) ?? readDevnetDeploymentTokenId();
 
   return {
     port: readNumber("PORT", "8080"),
-    baseUrl: readString("AGON_GATEWAY_BASE_URL", baseUrlFallback),
-    facilitatorWalletBase58: readOptionalString("AGON_FACILITATOR_WALLET_BASE58"),
-    internalSettlementSecret: readOptionalString("AGON_INTERNAL_SETTLEMENT_SECRET"),
-    payToWallet: readString("AGON_X402_PAY_TO_WALLET", process.env.AGON_GATEWAY_PAYEE_WALLET),
+    baseUrl: readString("RYVO_GATEWAY_BASE_URL", baseUrlFallback),
+    facilitatorWalletBase58: readOptionalString("RYVO_FACILITATOR_WALLET_BASE58"),
+    internalSettlementSecret: readOptionalString("RYVO_INTERNAL_SETTLEMENT_SECRET"),
+    payToWallet: readString("RYVO_X402_PAY_TO_WALLET", process.env.RYVO_GATEWAY_PAYEE_WALLET),
     mainnetUsdcMint,
     devnetUsdcMint,
     mainnetPaymentNetwork: SOLANA_MAINNET_CAIP2,
@@ -165,21 +165,21 @@ export function loadConfig(): GatewayConfig {
     heliusWalletApiBaseUrl: readString("HELIUS_WALLET_API_BASE_URL", "https://api.helius.xyz"),
     tokensApiBaseUrl: readString("TOKENS_API_BASE_URL", "https://api.tokens.xyz"),
     tokensApiKey: readString("TOKENS_API_KEY"),
-    rpcRateLimitPerSecond: readNumber("AGON_RATE_LIMIT_RPC_RPS", "50"),
-    dasRateLimitPerSecond: readNumber("AGON_RATE_LIMIT_DAS_RPS", "10"),
-    tokensRateLimitPerMinute: readNumber("AGON_RATE_LIMIT_TOKENS_PER_MINUTE", "30"),
-    challengeRateLimitPerMinute: readNumber("AGON_RATE_LIMIT_CHALLENGE_PER_MINUTE", "120"),
+    rpcRateLimitPerSecond: readNumber("RYVO_RATE_LIMIT_RPC_RPS", "50"),
+    dasRateLimitPerSecond: readNumber("RYVO_RATE_LIMIT_DAS_RPS", "10"),
+    tokensRateLimitPerMinute: readNumber("RYVO_RATE_LIMIT_TOKENS_PER_MINUTE", "30"),
+    challengeRateLimitPerMinute: readNumber("RYVO_RATE_LIMIT_CHALLENGE_PER_MINUTE", "120"),
     upstashRedisRestUrl: readString("UPSTASH_REDIS_REST_URL"),
     upstashRedisRestToken: readString("UPSTASH_REDIS_REST_TOKEN"),
-    agonProtocolProgramId: readOptionalString("AGON_PROTOCOL_PROGRAM_ID"),
-    agonProtocolDevnetUsdcTokenId,
-    agonMerchantOwner: readOptionalString("AGON_GATEWAY_MERCHANT_OWNER"),
-    agonMerchantParticipantId: readOptionalPositiveInteger("AGON_GATEWAY_MERCHANT_PARTICIPANT_ID"),
-    agonMessageVersion: readPositiveInteger("AGON_PROTOCOL_MESSAGE_VERSION", "1"),
-    agonChainId: readPositiveInteger("AGON_PROTOCOL_DEVNET_CHAIN_ID", "1"),
-    agonChannelSnapshotTtlMs: readPositiveInteger("AGON_CHANNEL_SNAPSHOT_TTL_MS", "2000"),
-    agonChannelSettlementMinDelta: readString("AGON_CHANNEL_SETTLEMENT_MIN_DELTA", "0.250000"),
-    agonChannelSettlementMaxAgeSeconds: readPositiveInteger("AGON_CHANNEL_SETTLEMENT_MAX_AGE_SECONDS", "300"),
-    agonChannelSettlementMinHeadroomBps: readPositiveInteger("AGON_CHANNEL_SETTLEMENT_MIN_HEADROOM_BPS", "1000"),
+    ryvoProtocolProgramId: readOptionalString("RYVO_PROTOCOL_PROGRAM_ID"),
+    ryvoProtocolDevnetUsdcTokenId,
+    ryvoMerchantOwner: readOptionalString("RYVO_GATEWAY_MERCHANT_OWNER"),
+    ryvoMerchantParticipantId: readOptionalPositiveInteger("RYVO_GATEWAY_MERCHANT_PARTICIPANT_ID"),
+    ryvoMessageVersion: readPositiveInteger("RYVO_PROTOCOL_MESSAGE_VERSION", "1"),
+    ryvoChainId: readPositiveInteger("RYVO_PROTOCOL_DEVNET_CHAIN_ID", "1"),
+    ryvoChannelSnapshotTtlMs: readPositiveInteger("RYVO_CHANNEL_SNAPSHOT_TTL_MS", "2000"),
+    ryvoChannelSettlementMinDelta: readString("RYVO_CHANNEL_SETTLEMENT_MIN_DELTA", "0.250000"),
+    ryvoChannelSettlementMaxAgeSeconds: readPositiveInteger("RYVO_CHANNEL_SETTLEMENT_MAX_AGE_SECONDS", "300"),
+    ryvoChannelSettlementMinHeadroomBps: readPositiveInteger("RYVO_CHANNEL_SETTLEMENT_MIN_HEADROOM_BPS", "1000"),
   };
 }

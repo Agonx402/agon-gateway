@@ -10,7 +10,7 @@ export interface RateLimitOutcome {
   retryAfterSeconds: number;
 }
 
-export interface AgonChannelLedger {
+export interface RyvoChannelLedger {
   latestAcceptedCommitted: string | null;
   oldestUnsettledAcceptedAt: string | null;
   inFlightRequestId: string | null;
@@ -18,7 +18,7 @@ export interface AgonChannelLedger {
   latestEnvelope: string | null;
 }
 
-export interface AgonChannelReservation {
+export interface RyvoChannelReservation {
   ok: boolean;
   state?: string;
   latestAcceptedCommitted?: string;
@@ -62,8 +62,8 @@ export class HostedGatewayState {
     await this.redis.del(this.replayKey(key));
   }
 
-  public async getAgonChannelLedger(channelKey: string): Promise<AgonChannelLedger> {
-    const ledger = await this.redis.hgetall<Record<string, string>>(this.agonChannelLedgerKey(channelKey));
+  public async getRyvoChannelLedger(channelKey: string): Promise<RyvoChannelLedger> {
+    const ledger = await this.redis.hgetall<Record<string, string>>(this.ryvoChannelLedgerKey(channelKey));
     return {
       latestAcceptedCommitted: ledger?.latestAcceptedCommitted ?? null,
       oldestUnsettledAcceptedAt: ledger?.oldestUnsettledAcceptedAt ?? null,
@@ -73,7 +73,7 @@ export class HostedGatewayState {
     };
   }
 
-  public async reserveAgonChannelCommitment(params: {
+  public async reserveRyvoChannelCommitment(params: {
     channelKey: string;
     requestId: string;
     requestHash: string;
@@ -81,7 +81,7 @@ export class HostedGatewayState {
     expectedPreviousCommittedAmount: string;
     newCommittedAmount: string;
     ttlSeconds?: number;
-  }): Promise<AgonChannelReservation> {
+  }): Promise<RyvoChannelReservation> {
     const script = `
 local ledgerKey = KEYS[1]
 local requestKey = KEYS[2]
@@ -108,7 +108,7 @@ return cjson.encode({ ok = true, latestAcceptedCommitted = latest })
 `;
     const raw = await (this.redis as any).eval(
       script,
-      [this.agonChannelLedgerKey(params.channelKey), this.agonChannelRequestKey(params.requestHash)],
+      [this.ryvoChannelLedgerKey(params.channelKey), this.ryvoChannelRequestKey(params.requestHash)],
       [
         params.baselineCommittedAmount,
         params.expectedPreviousCommittedAmount,
@@ -119,10 +119,10 @@ return cjson.encode({ ok = true, latestAcceptedCommitted = latest })
         String(Date.now()),
       ],
     );
-    return JSON.parse(String(raw)) as AgonChannelReservation;
+    return JSON.parse(String(raw)) as RyvoChannelReservation;
   }
 
-  public async promoteAgonChannelCommitment(params: {
+  public async promoteRyvoChannelCommitment(params: {
     channelKey: string;
     requestId: string;
     requestHash: string;
@@ -148,12 +148,12 @@ return "OK"
 `;
     await (this.redis as any).eval(
       script,
-      [this.agonChannelLedgerKey(params.channelKey), this.agonChannelRequestKey(params.requestHash)],
+      [this.ryvoChannelLedgerKey(params.channelKey), this.ryvoChannelRequestKey(params.requestHash)],
       [params.requestId, params.committedAmount, now, params.channelKey, String(SETTLED_TTL_SECONDS), params.envelope],
     );
   }
 
-  public async releaseAgonChannelCommitment(params: {
+  public async releaseRyvoChannelCommitment(params: {
     channelKey: string;
     requestId: string;
     requestHash: string;
@@ -170,16 +170,16 @@ return "OK"
 `;
     await (this.redis as any).eval(
       script,
-      [this.agonChannelLedgerKey(params.channelKey), this.agonChannelRequestKey(params.requestHash)],
+      [this.ryvoChannelLedgerKey(params.channelKey), this.ryvoChannelRequestKey(params.requestHash)],
       [params.requestId],
     );
   }
 
-  public async markAgonChannelSettled(params: {
+  public async markRyvoChannelSettled(params: {
     channelKey: string;
     settledCumulative: string;
   }): Promise<void> {
-    await this.redis.hset(this.agonChannelLedgerKey(params.channelKey), {
+    await this.redis.hset(this.ryvoChannelLedgerKey(params.channelKey), {
       latestAcceptedCommitted: params.settledCumulative,
       oldestUnsettledAcceptedAt: "",
     });
@@ -222,7 +222,7 @@ return "OK"
   // Nonce tracking is intentionally NOT implemented. The optional
   // `hasUsedNonce` / `recordNonce` methods on the x402 SIWxStorage
   // interface, when both implemented, force every SIWX header to be
-  // single-use. Agon's Tokens routes are read-only and rely on the
+  // single-use. Ryvo's Tokens routes are read-only and rely on the
   // signed `expirationTime` (default 5 min) for replay protection,
   // which is the same guarantee the Coinbase x402 reference server
   // ships with by default. Leaving these methods undefined lets the
@@ -234,12 +234,12 @@ return "OK"
     return `replay:${key}`;
   }
 
-  private agonChannelLedgerKey(channelKey: string): string {
-    return `agon-channel:ledger:${this.hashKey(channelKey)}`;
+  private ryvoChannelLedgerKey(channelKey: string): string {
+    return `ryvo-channel:ledger:${this.hashKey(channelKey)}`;
   }
 
-  private agonChannelRequestKey(requestHash: string): string {
-    return `agon-channel:request:${requestHash}`;
+  private ryvoChannelRequestKey(requestHash: string): string {
+    return `ryvo-channel:request:${requestHash}`;
   }
 
   private hashKey(input: string): string {

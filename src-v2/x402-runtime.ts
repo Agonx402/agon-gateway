@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as anchor from "@coral-xyz/anchor";
 import {
-  AgonClient,
+  RyvoClient,
   OFFICIAL_DEVNET_USDC_MINT,
   calculateChannelHeadroom,
   deriveMessageDomain,
   findChannelPda,
   verifyGatewayCommitmentEnvelope,
-} from "@agonx402/sdk";
+} from "@ryvonetwork/sdk";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
 import {
@@ -31,7 +31,7 @@ import { SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2, toFacilitatorSvmSigner } fro
 import { registerExactSvmScheme as registerExactSvmFacilitatorScheme } from "@x402/svm/exact/facilitator";
 import { registerExactSvmScheme as registerExactSvmServerScheme } from "@x402/svm/exact/server";
 import { NextRequest, NextResponse } from "next/server";
-import { buildAgonChannelRouteCatalog, buildCatalogEntries, buildRouteCatalog, resolveRoute, resolveRouteByPath, validateRouteParams } from "./catalog";
+import { buildRyvoChannelRouteCatalog, buildCatalogEntries, buildRouteCatalog, resolveRoute, resolveRouteByPath, validateRouteParams } from "./catalog";
 import { loadConfig } from "./config";
 import { loadFacilitatorSigner } from "./facilitator-wallet";
 import { HostedGatewayState } from "./hosted-state";
@@ -51,7 +51,7 @@ interface GatewayRuntime {
   config: GatewayConfig;
   state: HostedGatewayState;
   routes: RouteSpec[];
-  agonChannelRoutes: RouteSpec[];
+  ryvoChannelRoutes: RouteSpec[];
   catalog: CatalogRouteEntry[];
   httpServer: x402HTTPResourceServer;
 }
@@ -135,7 +135,7 @@ class CachedNextAdapter implements HTTPAdapter {
 
 let runtimePromise: Promise<GatewayRuntime> | null = null;
 let facilitatorRuntimePromise: Promise<FacilitatorRuntime> | null = null;
-const agonChannelSnapshotCache = new Map<string, { fetchedAt: number; channel: any }>();
+const ryvoChannelSnapshotCache = new Map<string, { fetchedAt: number; channel: any }>();
 
 const PROVIDER_LABELS: Record<CatalogRouteEntry["provider"], string> = {
   alchemy: "Alchemy",
@@ -145,8 +145,8 @@ const PROVIDER_LABELS: Record<CatalogRouteEntry["provider"], string> = {
 
 const ACCESS_CONTROL_ALLOW_HEADERS = [
   "Content-Type",
-  "AGON-COMMITMENT",
-  "X-Agon-Request-Id",
+  "RYVO-COMMITMENT",
+  "X-Ryvo-Request-Id",
   "PAYMENT-SIGNATURE",
   "X-PAYMENT",
   "X-PAYMENT-RESPONSE",
@@ -238,7 +238,7 @@ function buildRouteExtensions(config: GatewayConfig, route: RouteSpec) {
     ...discovery,
     ...declareSIWxExtension({
       network,
-      statement: "Sign in with your wallet to access TokensAPI through Agon.",
+      statement: "Sign in with your wallet to access TokensAPI through Ryvo.",
       expirationSeconds: 300,
     }),
   };
@@ -523,7 +523,7 @@ async function createRuntime(): Promise<GatewayRuntime> {
     verify: async (...args: Parameters<typeof facilitator.verify>) => {
       const result = await facilitator.verify(...args);
       if (!result.isValid) {
-        console.error("[agon-gateway] facilitator verify failed", {
+        console.error("[ryvo-gateway] facilitator verify failed", {
           invalidReason: result.invalidReason,
           invalidMessage: "invalidMessage" in result ? result.invalidMessage : undefined,
           payer: result.payer,
@@ -534,7 +534,7 @@ async function createRuntime(): Promise<GatewayRuntime> {
     settle: async (...args: Parameters<typeof facilitator.settle>) => {
       const result = await facilitator.settle(...args);
       if (!result.success) {
-        console.error("[agon-gateway] facilitator settle failed", {
+        console.error("[ryvo-gateway] facilitator settle failed", {
           errorReason: result.errorReason,
           errorMessage: "errorMessage" in result ? result.errorMessage : undefined,
           payer: result.payer,
@@ -554,7 +554,7 @@ async function createRuntime(): Promise<GatewayRuntime> {
   resourceServer.registerExtension(siwxResourceServerExtension);
 
   const routes = buildRouteCatalog(config);
-  const agonChannelRoutes = buildAgonChannelRouteCatalog(config);
+  const ryvoChannelRoutes = buildRyvoChannelRouteCatalog(config);
   const httpServer = new x402HTTPResourceServer(resourceServer, buildRoutesConfig(config, routes))
     .onProtectedRequest(createSIWxRequestHook({ storage: state }));
   await httpServer.initialize();
@@ -563,8 +563,8 @@ async function createRuntime(): Promise<GatewayRuntime> {
     config,
     state,
     routes,
-    agonChannelRoutes,
-    catalog: buildCatalogEntries(config, [...routes, ...agonChannelRoutes]),
+    ryvoChannelRoutes,
+    catalog: buildCatalogEntries(config, [...routes, ...ryvoChannelRoutes]),
     httpServer,
   };
 }
@@ -648,8 +648,8 @@ export async function handleCatalogRequest(request?: NextRequest): Promise<NextR
     ok: true,
     version: 1,
     payment: {
-      modes: runtime.agonChannelRoutes.length > 0
-        ? ["exact", "siwx", "agon-channel"]
+      modes: runtime.ryvoChannelRoutes.length > 0
+        ? ["exact", "siwx", "ryvo-channel"]
         : ["exact", "siwx"],
       network: runtime.config.mainnetPaymentNetwork,
       networks: [runtime.config.mainnetPaymentNetwork, runtime.config.devnetPaymentNetwork],
@@ -681,7 +681,7 @@ export async function handleCatalogRequest(request?: NextRequest): Promise<NextR
 export function handleHealthRequest(request?: NextRequest): NextResponse {
   return finalizePublicResponse(NextResponse.json({
     ok: true,
-    service: "agon-gateway",
+    service: "ryvo-gateway",
     status: "healthy",
   }), ["GET", "HEAD", "OPTIONS"], request?.method === "HEAD");
 }
@@ -1055,15 +1055,15 @@ async function handleGrantedRouteRequest(
   );
 }
 
-function agonCommitmentHeader(request: NextRequest): string | undefined {
-  return request.headers.get("AGON-COMMITMENT")
-    ?? request.headers.get("agon-commitment")
+function ryvoCommitmentHeader(request: NextRequest): string | undefined {
+  return request.headers.get("RYVO-COMMITMENT")
+    ?? request.headers.get("ryvo-commitment")
     ?? undefined;
 }
 
-function agonRequestIdHeader(request: NextRequest): string | undefined {
-  return request.headers.get("X-Agon-Request-Id")
-    ?? request.headers.get("x-agon-request-id")
+function ryvoRequestIdHeader(request: NextRequest): string | undefined {
+  return request.headers.get("X-Ryvo-Request-Id")
+    ?? request.headers.get("x-ryvo-request-id")
     ?? undefined;
 }
 
@@ -1081,19 +1081,19 @@ function maxBigInt(left: bigint, right: bigint): bigint {
   return left > right ? left : right;
 }
 
-function createReadOnlyAgonClient(config: GatewayConfig): AgonClient {
-  if (!config.agonProtocolProgramId) {
-    throw new Error("AGON_PROTOCOL_PROGRAM_ID is required for Agon channel routes.");
+function createReadOnlyRyvoClient(config: GatewayConfig): RyvoClient {
+  if (!config.ryvoProtocolProgramId) {
+    throw new Error("RYVO_PROTOCOL_PROGRAM_ID is required for Ryvo channel routes.");
   }
 
   const connection = new Connection(config.solanaDevnetRpcUrl, "confirmed");
   const readOnlyWallet = {
     publicKey: PublicKey.default,
     signTransaction: async () => {
-      throw new Error("Agon Gateway channel authorization is read-only.");
+      throw new Error("Ryvo Gateway channel authorization is read-only.");
     },
     signAllTransactions: async () => {
-      throw new Error("Agon Gateway channel authorization is read-only.");
+      throw new Error("Ryvo Gateway channel authorization is read-only.");
     },
   };
   const provider = new anchor.AnchorProvider(connection, readOnlyWallet, {
@@ -1101,37 +1101,37 @@ function createReadOnlyAgonClient(config: GatewayConfig): AgonClient {
     preflightCommitment: "confirmed",
   });
 
-  return new AgonClient({
+  return new RyvoClient({
     provider,
-    programId: new PublicKey(config.agonProtocolProgramId),
+    programId: new PublicKey(config.ryvoProtocolProgramId),
   });
 }
 
-async function fetchAgonChannelState(
+async function fetchRyvoChannelState(
   runtime: GatewayRuntime,
   channelState: PublicKey,
 ): Promise<any> {
   const cacheKey = channelState.toBase58();
   const now = Date.now();
-  const cached = agonChannelSnapshotCache.get(cacheKey);
-  if (cached && now - cached.fetchedAt <= runtime.config.agonChannelSnapshotTtlMs) {
+  const cached = ryvoChannelSnapshotCache.get(cacheKey);
+  if (cached && now - cached.fetchedAt <= runtime.config.ryvoChannelSnapshotTtlMs) {
     return cached.channel;
   }
 
   try {
-    const client = createReadOnlyAgonClient(runtime.config);
+    const client = createReadOnlyRyvoClient(runtime.config);
     const channel = await client.fetchChannel({ channelState });
-    agonChannelSnapshotCache.set(cacheKey, { fetchedAt: now, channel });
+    ryvoChannelSnapshotCache.set(cacheKey, { fetchedAt: now, channel });
     return channel;
   } catch (error) {
-    if (cached && now - cached.fetchedAt <= runtime.config.agonChannelSnapshotTtlMs) {
+    if (cached && now - cached.fetchedAt <= runtime.config.ryvoChannelSnapshotTtlMs) {
       return cached.channel;
     }
     throw error;
   }
 }
 
-function agonChannelError(
+function ryvoChannelError(
   status: number,
   error: string,
   detail?: Record<string, unknown>,
@@ -1143,7 +1143,7 @@ function agonChannelError(
   }, { status });
 }
 
-function validateAgonCommitmentEnvelope(
+function validateRyvoCommitmentEnvelope(
   runtime: GatewayRuntime,
   route: RouteSpec,
   envelope: string,
@@ -1151,39 +1151,39 @@ function validateAgonCommitmentEnvelope(
 ): { ok: true; payload: any; committedAmount: bigint } | { ok: false; response: NextResponse } {
   const verification = verifyGatewayCommitmentEnvelope(envelope);
   if (!verification.ok) {
-    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: verification.error }) };
+    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: verification.error }) };
   }
 
   const payload = verification.payload;
   const expectedProgramId = route.programId;
   const expectedTokenId = route.tokenId;
   const expectedMessageDomain = route.messageDomain
-    ?? deriveMessageDomain(new PublicKey(expectedProgramId!), runtime.config.agonChainId).toString("base64");
+    ?? deriveMessageDomain(new PublicKey(expectedProgramId!), runtime.config.ryvoChainId).toString("base64");
 
   if (payload.cluster !== "devnet") {
-    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "cluster_mismatch" }) };
+    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "cluster_mismatch" }) };
   }
   if (payload.programId !== expectedProgramId) {
-    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "program_mismatch" }) };
+    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "program_mismatch" }) };
   }
   if (payload.messageDomain !== expectedMessageDomain) {
-    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "message_domain_mismatch" }) };
+    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "message_domain_mismatch" }) };
   }
   if (payload.tokenId !== expectedTokenId || payload.tokenMint !== OFFICIAL_DEVNET_USDC_MINT) {
-    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "token_mismatch" }) };
+    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "token_mismatch" }) };
   }
   if (payload.payeeId !== route.merchantParticipantId) {
-    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "merchant_mismatch" }) };
+    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "merchant_mismatch" }) };
   }
   if (
     Number(channel.payerId) !== payload.payerId
     || Number(channel.payeeId) !== payload.payeeId
     || Number(channel.tokenId) !== payload.tokenId
   ) {
-    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "channel_mismatch" }) };
+    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "channel_mismatch" }) };
   }
   if (channel.authorizedSigner?.toBase58?.() !== payload.signer) {
-    return { ok: false, response: agonChannelError(402, "invalid_agon_commitment", { reason: "authorized_signer_mismatch" }) };
+    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "authorized_signer_mismatch" }) };
   }
 
   return {
@@ -1193,11 +1193,11 @@ function validateAgonCommitmentEnvelope(
   };
 }
 
-export async function handleAgonChannelRouteRequest(request: NextRequest): Promise<NextResponse> {
+export async function handleRyvoChannelRouteRequest(request: NextRequest): Promise<NextResponse> {
   const runtime = await getGatewayRuntime();
   const requestedMethod = requestMethod(request);
   if (!requestedMethod) {
-    const matchedRoute = resolveRouteByPath(runtime.agonChannelRoutes, request.nextUrl.pathname);
+    const matchedRoute = resolveRouteByPath(runtime.ryvoChannelRoutes, request.nextUrl.pathname);
     const methods = matchedRoute ? allowedMethodsForRoute(matchedRoute.route) : ["OPTIONS"];
     return finalizePublicResponse(
       NextResponse.json({ ok: false, error: "Method not allowed." }, { status: 405 }),
@@ -1206,7 +1206,7 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
     );
   }
 
-  const resolvedRoute = resolveRoute(runtime.agonChannelRoutes, requestedMethod, request.nextUrl.pathname);
+  const resolvedRoute = resolveRoute(runtime.ryvoChannelRoutes, requestedMethod, request.nextUrl.pathname);
   if (!resolvedRoute) {
     return finalizePublicResponse(
       NextResponse.json({ ok: false, error: "Not found." }, { status: 404 }),
@@ -1217,13 +1217,13 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
 
   const route = resolvedRoute.route;
   const allowedMethods = allowedMethodsForRoute(route);
-  const requestId = agonRequestIdHeader(request);
-  const envelope = agonCommitmentHeader(request);
+  const requestId = ryvoRequestIdHeader(request);
+  const envelope = ryvoCommitmentHeader(request);
   if (!requestId || !envelope) {
     return finalizePublicResponse(
-      agonChannelError(402, "agon_commitment_required", {
-        requiredHeaders: ["X-Agon-Request-Id", "AGON-COMMITMENT"],
-        accessMode: "agon-channel",
+      ryvoChannelError(402, "ryvo_commitment_required", {
+        requiredHeaders: ["X-Ryvo-Request-Id", "RYVO-COMMITMENT"],
+        accessMode: "ryvo-channel",
         priceTokenAmount: route.priceTokenAmount,
         tokenMint: route.tokenMint,
         tokenId: route.tokenId,
@@ -1261,7 +1261,7 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
   const decoded = verifyGatewayCommitmentEnvelope(envelope);
   if (!decoded.ok) {
     return finalizePublicResponse(
-      agonChannelError(402, "invalid_agon_commitment", { reason: decoded.error }),
+      ryvoChannelError(402, "invalid_ryvo_commitment", { reason: decoded.error }),
       allowedMethods,
       requestedMethod === "HEAD",
     );
@@ -1276,10 +1276,10 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
 
   let channel;
   try {
-    channel = await fetchAgonChannelState(runtime, channelState);
+    channel = await fetchRyvoChannelState(runtime, channelState);
   } catch (error) {
     return finalizePublicResponse(
-      agonChannelError(503, "agon_channel_state_unavailable", {
+      ryvoChannelError(503, "ryvo_channel_state_unavailable", {
         reason: error instanceof Error ? error.message : "fetch_failed",
       }),
       allowedMethods,
@@ -1287,13 +1287,13 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
     );
   }
 
-  const validated = validateAgonCommitmentEnvelope(runtime, route, envelope, channel);
+  const validated = validateRyvoCommitmentEnvelope(runtime, route, envelope, channel);
   if (!validated.ok) {
     return finalizePublicResponse(validated.response, allowedMethods, requestedMethod === "HEAD");
   }
 
   const channelKey = channelState.toBase58();
-  const ledger = await runtime.state.getAgonChannelLedger(channelKey);
+  const ledger = await runtime.state.getRyvoChannelLedger(channelKey);
   const settledCumulative = BigInt(channel.settledCumulative.toString());
   const ledgerLatest = ledger.latestAcceptedCommitted
     ? BigInt(ledger.latestAcceptedCommitted)
@@ -1304,7 +1304,7 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
 
   if (validated.committedAmount !== expectedCommittedAmount) {
     return finalizePublicResponse(
-      agonChannelError(402, "invalid_agon_commitment", {
+      ryvoChannelError(402, "invalid_ryvo_commitment", {
         reason: "commitment_amount_mismatch",
         expectedCommittedAmount: expectedCommittedAmount.toString(),
         receivedCommittedAmount: validated.committedAmount.toString(),
@@ -1317,7 +1317,7 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
   const headroom = calculateChannelHeadroom(channel, validated.committedAmount);
   if (validated.committedAmount > headroom.maxAuthorized) {
     return finalizePublicResponse(
-      agonChannelError(402, "insufficient_channel_headroom", {
+      ryvoChannelError(402, "insufficient_channel_headroom", {
         maxAuthorized: headroom.maxAuthorized.toString(),
         committedAmount: validated.committedAmount.toString(),
       }),
@@ -1327,7 +1327,7 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
   }
 
   const requestHash = createHash("sha256").update(`${channelKey}:${requestId}`).digest("hex");
-  const reservation = await runtime.state.reserveAgonChannelCommitment({
+  const reservation = await runtime.state.reserveRyvoChannelCommitment({
     channelKey,
     requestId,
     requestHash,
@@ -1339,13 +1339,13 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
   if (!reservation.ok) {
     if (reservation.reason === "request_replay" && reservation.state?.includes("\"accepted\"")) {
       return finalizePublicResponse(
-        NextResponse.json({ ok: true, idempotent: true, accessMode: "agon-channel", channel: channelKey }),
+        NextResponse.json({ ok: true, idempotent: true, accessMode: "ryvo-channel", channel: channelKey }),
         allowedMethods,
         requestedMethod === "HEAD",
       );
     }
     return finalizePublicResponse(
-      agonChannelError(409, "agon_channel_reservation_failed", reservation as unknown as Record<string, unknown>),
+      ryvoChannelError(409, "ryvo_channel_reservation_failed", reservation as unknown as Record<string, unknown>),
       allowedMethods,
       requestedMethod === "HEAD",
     );
@@ -1359,16 +1359,16 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
     upstreamLatencyMs = Date.now() - upstreamStartedAt;
   } catch (error) {
     upstreamLatencyMs = Date.now() - upstreamStartedAt;
-    await runtime.state.releaseAgonChannelCommitment({ channelKey, requestId, requestHash });
+    await runtime.state.releaseRyvoChannelCommitment({ channelKey, requestId, requestHash });
     const failureResponse = upstreamFailureResponse(error);
     await recordEvent(runtime.state, {
-      event: "agon_channel_upstream_failed",
+      event: "ryvo_channel_upstream_failed",
       timestamp: new Date().toISOString(),
       requestId,
       ...eventBase(runtime.config, route),
       upstreamLatencyMs,
       httpStatus: failureResponse.status,
-    }, "agon_channel_upstream_failed");
+    }, "ryvo_channel_upstream_failed");
     return finalizePublicResponse(
       NextResponse.json(failureResponse.body, { status: failureResponse.status }),
       allowedMethods,
@@ -1376,7 +1376,7 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
     );
   }
 
-  await runtime.state.promoteAgonChannelCommitment({
+  await runtime.state.promoteRyvoChannelCommitment({
     channelKey,
     requestId,
     requestHash,
@@ -1384,7 +1384,7 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
     envelope,
   });
   await recordEvent(runtime.state, {
-    event: "agon_channel_access_granted",
+    event: "ryvo_channel_access_granted",
     timestamp: new Date().toISOString(),
     requestId,
     ...eventBase(runtime.config, route),
@@ -1395,7 +1395,7 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
       committedAmount: validated.committedAmount.toString(),
       priceTokenAmount: route.priceTokenAmount,
     },
-  }, "agon_channel_access_granted");
+  }, "ryvo_channel_access_granted");
 
   return finalizePublicResponse(NextResponse.json({
     ok: true,
@@ -1403,7 +1403,7 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
     cluster: route.cluster,
     surface: route.surface,
     method: route.method,
-    accessMode: "agon-channel",
+    accessMode: "ryvo-channel",
     priceTokenAmount: route.priceTokenAmount,
     tokenSymbol: route.tokenSymbol,
     tokenMint: route.tokenMint,
@@ -1412,17 +1412,17 @@ export async function handleAgonChannelRouteRequest(request: NextRequest): Promi
     remainingHeadroom: headroom.remainingHeadroom.toString(),
     settlement: {
       mode: "settleCommitmentBundle",
-      minDelta: runtime.config.agonChannelSettlementMinDelta,
-      maxAgeSeconds: runtime.config.agonChannelSettlementMaxAgeSeconds,
-      minHeadroomBps: runtime.config.agonChannelSettlementMinHeadroomBps,
+      minDelta: runtime.config.ryvoChannelSettlementMinDelta,
+      maxAgeSeconds: runtime.config.ryvoChannelSettlementMaxAgeSeconds,
+      minHeadroomBps: runtime.config.ryvoChannelSettlementMinHeadroomBps,
     },
     result: upstream.result,
   }), allowedMethods, requestedMethod === "HEAD");
 }
 
-export async function handleAgonChannelRouteOptionsRequest(request: NextRequest): Promise<NextResponse> {
+export async function handleRyvoChannelRouteOptionsRequest(request: NextRequest): Promise<NextResponse> {
   const runtime = await getGatewayRuntime();
-  const resolvedRoute = resolveRouteByPath(runtime.agonChannelRoutes, request.nextUrl.pathname);
+  const resolvedRoute = resolveRouteByPath(runtime.ryvoChannelRoutes, request.nextUrl.pathname);
   if (!resolvedRoute) {
     return finalizePublicResponse(
       NextResponse.json({ ok: false, error: "Not found." }, { status: 404 }),
@@ -1765,7 +1765,7 @@ export async function requireInternalAuth(request: NextRequest): Promise<NextRes
     return NextResponse.json({ ok: false, error: "Internal facilitator is not configured." }, { status: 500 });
   }
 
-  const header = request.headers.get("x-agon-internal-secret");
+  const header = request.headers.get("x-ryvo-internal-secret");
   if (header !== config.internalSettlementSecret) {
     return NextResponse.json({ ok: false, error: "Forbidden." }, { status: 403 });
   }

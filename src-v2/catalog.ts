@@ -1,6 +1,6 @@
 import { buildHeliusWalletRouteCatalog, validateHeliusWalletRouteParams } from "./helius-wallet-routes";
 import { buildTokensRouteCatalog, validateTokensRouteParams } from "./tokens-routes";
-import { deriveMessageDomain } from "@agonx402/sdk";
+import { deriveMessageDomain } from "@ryvonetwork/sdk";
 import { PublicKey } from "@solana/web3.js";
 import type {
   CatalogRouteEntry,
@@ -30,12 +30,12 @@ function routePaymentMint(config: GatewayConfig, route: RouteSpec): string {
     : config.mainnetUsdcMint;
 }
 
-function hasAgonChannelConfig(config: GatewayConfig): boolean {
+function hasRyvoChannelConfig(config: GatewayConfig): boolean {
   return Boolean(
-    config.agonProtocolProgramId
-      && config.agonProtocolDevnetUsdcTokenId !== undefined
-      && config.agonMerchantOwner
-      && config.agonMerchantParticipantId !== undefined,
+    config.ryvoProtocolProgramId
+      && config.ryvoProtocolDevnetUsdcTokenId !== undefined
+      && config.ryvoMerchantOwner
+      && config.ryvoMerchantParticipantId !== undefined,
   );
 }
 
@@ -46,28 +46,28 @@ function priceUsdToTokenAmount(priceUsd: string): string {
   return `${whole}.${fractional}`;
 }
 
-function withAgonChannelMetadata(config: GatewayConfig, route: RouteSpec): RouteSpec {
-  if (!hasAgonChannelConfig(config)) {
-    throw new Error("Agon channel routes require protocol and merchant config.");
+function withRyvoChannelMetadata(config: GatewayConfig, route: RouteSpec): RouteSpec {
+  if (!hasRyvoChannelConfig(config)) {
+    throw new Error("Ryvo channel routes require protocol and merchant config.");
   }
 
-  const programId = new PublicKey(config.agonProtocolProgramId!);
-  const messageDomain = deriveMessageDomain(programId, config.agonChainId).toString("base64");
+  const programId = new PublicKey(config.ryvoProtocolProgramId!);
+  const messageDomain = deriveMessageDomain(programId, config.ryvoChainId).toString("base64");
   const priceTokenAmount = priceUsdToTokenAmount(route.priceUsd ?? "0");
 
   return {
     ...route,
-    accessMode: "agon-channel",
+    accessMode: "ryvo-channel",
     priceUsd: undefined,
     priceTokenAmount,
     tokenSymbol: "USDC",
     tokenDecimals: 6,
     tokenMint: config.devnetUsdcMint,
-    tokenId: config.agonProtocolDevnetUsdcTokenId,
+    tokenId: config.ryvoProtocolDevnetUsdcTokenId,
     programId: programId.toBase58(),
-    merchantOwner: config.agonMerchantOwner,
-    merchantParticipantId: config.agonMerchantParticipantId,
-    messageVersion: config.agonMessageVersion,
+    merchantOwner: config.ryvoMerchantOwner,
+    merchantParticipantId: config.ryvoMerchantParticipantId,
+    messageVersion: config.ryvoMessageVersion,
     messageDomain,
   };
 }
@@ -738,8 +738,8 @@ export function buildRouteCatalog(config: GatewayConfig): RouteSpec[] {
   return routes;
 }
 
-export function buildAgonChannelRouteCatalog(config: GatewayConfig): RouteSpec[] {
-  if (!hasAgonChannelConfig(config)) {
+export function buildRyvoChannelRouteCatalog(config: GatewayConfig): RouteSpec[] {
+  if (!hasRyvoChannelConfig(config)) {
     return [];
   }
 
@@ -751,9 +751,9 @@ export function buildAgonChannelRouteCatalog(config: GatewayConfig): RouteSpec[]
       if (!methodSupportsProvider(rpc, provider)) continue;
       if (!isRouteSupported(cluster, provider, "rpc")) continue;
       const source = buildSolanaRouteSpec(config, cluster, provider, "rpc", rpc.method, rpc.description);
-      routes.push(withAgonChannelMetadata(config, {
+      routes.push(withRyvoChannelMetadata(config, {
         ...source,
-        path: source.path.replace("/v1/x402/solana/devnet", "/v1/agon-channel/solana/devnet"),
+        path: source.path.replace("/v1/x402/solana/devnet", "/v1/ryvo-channel/solana/devnet"),
       }));
     }
 
@@ -761,9 +761,9 @@ export function buildAgonChannelRouteCatalog(config: GatewayConfig): RouteSpec[]
       if (!methodSupportsProvider(das, provider)) continue;
       if (!isRouteSupported(cluster, provider, "das")) continue;
       const source = buildSolanaRouteSpec(config, cluster, provider, "das", das.method, das.description);
-      routes.push(withAgonChannelMetadata(config, {
+      routes.push(withRyvoChannelMetadata(config, {
         ...source,
-        path: source.path.replace("/v1/x402/solana/devnet", "/v1/agon-channel/solana/devnet"),
+        path: source.path.replace("/v1/x402/solana/devnet", "/v1/ryvo-channel/solana/devnet"),
       }));
     }
   }
@@ -772,9 +772,9 @@ export function buildAgonChannelRouteCatalog(config: GatewayConfig): RouteSpec[]
     if (route.cluster !== "devnet") {
       continue;
     }
-    routes.push(withAgonChannelMetadata(config, {
+    routes.push(withRyvoChannelMetadata(config, {
       ...route,
-      path: route.path.replace("/v1/x402/helius/devnet/wallet", "/v1/agon-channel/helius/devnet/wallet"),
+      path: route.path.replace("/v1/x402/helius/devnet/wallet", "/v1/ryvo-channel/helius/devnet/wallet"),
     }));
   }
 

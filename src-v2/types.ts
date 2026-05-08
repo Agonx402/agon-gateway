@@ -10,7 +10,7 @@ export type RouteKind =
   | "tokens-body"
   | "helius-wallet-query"
   | "helius-wallet-body";
-export type RouteAccessMode = "exact" | "siwx" | "agon-channel";
+export type RouteAccessMode = "exact" | "siwx" | "ryvo-channel";
 
 export interface RouteSpec {
   path: string;
@@ -148,14 +148,14 @@ export interface GatewayConfig {
   challengeRateLimitPerMinute: number;
   upstashRedisRestUrl: string;
   upstashRedisRestToken: string;
-  agonProtocolProgramId?: string;
-  agonProtocolDevnetUsdcTokenId?: number;
-  agonMerchantOwner?: string;
-  agonMerchantParticipantId?: number;
-  agonMessageVersion: number;
-  agonChainId: number;
-  agonChannelSnapshotTtlMs: number;
-  agonChannelSettlementMinDelta: string;
-  agonChannelSettlementMaxAgeSeconds: number;
-  agonChannelSettlementMinHeadroomBps: number;
+  ryvoProtocolProgramId?: string;
+  ryvoProtocolDevnetUsdcTokenId?: number;
+  ryvoMerchantOwner?: string;
+  ryvoMerchantParticipantId?: number;
+  ryvoMessageVersion: number;
+  ryvoChainId: number;
+  ryvoChannelSnapshotTtlMs: number;
+  ryvoChannelSettlementMinDelta: string;
+  ryvoChannelSettlementMaxAgeSeconds: number;
+  ryvoChannelSettlementMinHeadroomBps: number;
 }
