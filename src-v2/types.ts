@@ -158,4 +158,12 @@ export interface GatewayConfig {
   ryvoChannelSettlementMinDelta: string;
   ryvoChannelSettlementMaxAgeSeconds: number;
   ryvoChannelSettlementMinHeadroomBps: number;
+  /** Max channels processed per settler cycle (Vercel cron). */
+  ryvoSettlerMaxChannelsPerCycle: number;
+  /** Max commitments bundled into a single `settleCommitmentBundle` tx. */
+  ryvoSettlerMaxBundleSize: number;
+  /** When true, the settler logs what it would do but never submits a tx. */
+  ryvoSettlerDryRun: boolean;
+  /** Min seconds between forced sweeps of a channel even if delta is below threshold. */
+  ryvoSettlerForceSweepAfterSeconds: number;
 }

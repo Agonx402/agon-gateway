@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import * as anchor from "@coral-xyz/anchor";
 import {
+  type ResolvedChannelLane,
   RyvoClient,
   OFFICIAL_DEVNET_USDC_MINT,
-  calculateChannelHeadroom,
   deriveMessageDomain,
-  findChannelPda,
-  verifyGatewayCommitmentEnvelope,
+  verifyGatewayCommitmentEnvelopeFull,
+  type VerifyGatewayCommitmentFullFailureReason,
 } from "@ryvonetwork/sdk";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
@@ -135,7 +134,7 @@ class CachedNextAdapter implements HTTPAdapter {
 
 let runtimePromise: Promise<GatewayRuntime> | null = null;
 let facilitatorRuntimePromise: Promise<FacilitatorRuntime> | null = null;
-const ryvoChannelSnapshotCache = new Map<string, { fetchedAt: number; channel: any }>();
+const ryvoChannelSnapshotCache = new Map<string, { fetchedAt: number; lane: ResolvedChannelLane }>();
 
 const PROVIDER_LABELS: Record<CatalogRouteEntry["provider"], string> = {
   alchemy: "Alchemy",
@@ -1081,51 +1080,46 @@ function maxBigInt(left: bigint, right: bigint): bigint {
   return left > right ? left : right;
 }
 
-function createReadOnlyRyvoClient(config: GatewayConfig): RyvoClient {
+export function createReadOnlyRyvoClient(config: GatewayConfig): RyvoClient {
   if (!config.ryvoProtocolProgramId) {
     throw new Error("RYVO_PROTOCOL_PROGRAM_ID is required for Ryvo channel routes.");
   }
 
   const connection = new Connection(config.solanaDevnetRpcUrl, "confirmed");
-  const readOnlyWallet = {
-    publicKey: PublicKey.default,
-    signTransaction: async () => {
-      throw new Error("Ryvo Gateway channel authorization is read-only.");
-    },
-    signAllTransactions: async () => {
-      throw new Error("Ryvo Gateway channel authorization is read-only.");
-    },
-  };
-  const provider = new anchor.AnchorProvider(connection, readOnlyWallet, {
-    commitment: "confirmed",
-    preflightCommitment: "confirmed",
-  });
-
-  return new RyvoClient({
-    provider,
-    programId: new PublicKey(config.ryvoProtocolProgramId),
-  });
+  return RyvoClient.fromConnection(
+    connection,
+    new PublicKey(config.ryvoProtocolProgramId),
+  );
 }
 
-async function fetchRyvoChannelState(
+async function fetchRyvoChannelLane(
   runtime: GatewayRuntime,
-  channelState: PublicKey,
-): Promise<any> {
-  const cacheKey = channelState.toBase58();
+  payerOwner: PublicKey,
+  payeeParticipantId: number,
+  tokenId: number,
+): Promise<ResolvedChannelLane | null> {
+  const cacheKey = `${payerOwner.toBase58()}:${payeeParticipantId}:${tokenId}`;
   const now = Date.now();
   const cached = ryvoChannelSnapshotCache.get(cacheKey);
   if (cached && now - cached.fetchedAt <= runtime.config.ryvoChannelSnapshotTtlMs) {
-    return cached.channel;
+    return cached.lane;
   }
 
+  const client = createReadOnlyRyvoClient(runtime.config);
   try {
-    const client = createReadOnlyRyvoClient(runtime.config);
-    const channel = await client.fetchChannel({ channelState });
-    ryvoChannelSnapshotCache.set(cacheKey, { fetchedAt: now, channel });
-    return channel;
+    const payerId = await client.findParticipantIdForOwner(payerOwner);
+    if (payerId === null) return null;
+    const lane = await client.fetchChannelByParticipantIds(
+      payerId,
+      payeeParticipantId,
+      tokenId,
+    );
+    if (!lane) return null;
+    ryvoChannelSnapshotCache.set(cacheKey, { fetchedAt: now, lane });
+    return lane;
   } catch (error) {
     if (cached && now - cached.fetchedAt <= runtime.config.ryvoChannelSnapshotTtlMs) {
-      return cached.channel;
+      return cached.lane;
     }
     throw error;
   }
@@ -1143,54 +1137,18 @@ function ryvoChannelError(
   }, { status });
 }
 
-function validateRyvoCommitmentEnvelope(
-  runtime: GatewayRuntime,
-  route: RouteSpec,
-  envelope: string,
-  channel: any,
-): { ok: true; payload: any; committedAmount: bigint } | { ok: false; response: NextResponse } {
-  const verification = verifyGatewayCommitmentEnvelope(envelope);
-  if (!verification.ok) {
-    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: verification.error }) };
+/** Maps full-verifier failure reasons to the right HTTP status. */
+function statusForVerifyFailure(
+  reason: VerifyGatewayCommitmentFullFailureReason,
+): number {
+  switch (reason) {
+    case "committedAmountNotMonotonic":
+      return 409;
+    case "insufficientHeadroom":
+      return 402;
+    default:
+      return 422;
   }
-
-  const payload = verification.payload;
-  const expectedProgramId = route.programId;
-  const expectedTokenId = route.tokenId;
-  const expectedMessageDomain = route.messageDomain
-    ?? deriveMessageDomain(new PublicKey(expectedProgramId!), runtime.config.ryvoChainId).toString("base64");
-
-  if (payload.cluster !== "devnet") {
-    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "cluster_mismatch" }) };
-  }
-  if (payload.programId !== expectedProgramId) {
-    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "program_mismatch" }) };
-  }
-  if (payload.messageDomain !== expectedMessageDomain) {
-    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "message_domain_mismatch" }) };
-  }
-  if (payload.tokenId !== expectedTokenId || payload.tokenMint !== OFFICIAL_DEVNET_USDC_MINT) {
-    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "token_mismatch" }) };
-  }
-  if (payload.payeeId !== route.merchantParticipantId) {
-    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "merchant_mismatch" }) };
-  }
-  if (
-    Number(channel.payerId) !== payload.payerId
-    || Number(channel.payeeId) !== payload.payeeId
-    || Number(channel.tokenId) !== payload.tokenId
-  ) {
-    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "channel_mismatch" }) };
-  }
-  if (channel.authorizedSigner?.toBase58?.() !== payload.signer) {
-    return { ok: false, response: ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "authorized_signer_mismatch" }) };
-  }
-
-  return {
-    ok: true,
-    payload,
-    committedAmount: BigInt(payload.committedAmount),
-  };
 }
 
 export async function handleRyvoChannelRouteRequest(request: NextRequest): Promise<NextResponse> {
@@ -1258,25 +1216,73 @@ export async function handleRyvoChannelRouteRequest(request: NextRequest): Promi
     );
   }
 
-  const decoded = verifyGatewayCommitmentEnvelope(envelope);
-  if (!decoded.ok) {
+  // Cheap envelope decode (no signature verify) to know which channel to look up.
+  // The full verifier below performs signature + structural + headroom checks
+  // against the on-chain lane snapshot we fetch next.
+  let envelopeBytes: Buffer;
+  try {
+    envelopeBytes = Buffer.from(envelope, "base64");
+  } catch {
     return finalizePublicResponse(
-      ryvoChannelError(402, "invalid_ryvo_commitment", { reason: decoded.error }),
+      ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "envelope_not_base64" }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+  let envelopePayload: { payerId?: number; payeeId?: number; tokenId?: number; signer?: string };
+  try {
+    envelopePayload = JSON.parse(envelopeBytes.toString("utf8"));
+  } catch {
+    return finalizePublicResponse(
+      ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "envelope_not_json" }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+  if (
+    typeof envelopePayload.payerId !== "number"
+    || typeof envelopePayload.payeeId !== "number"
+    || typeof envelopePayload.tokenId !== "number"
+    || typeof envelopePayload.signer !== "string"
+  ) {
+    return finalizePublicResponse(
+      ryvoChannelError(402, "invalid_ryvo_commitment", { reason: "envelope_missing_fields" }),
       allowedMethods,
       requestedMethod === "HEAD",
     );
   }
 
-  const channelState = findChannelPda(
-    new PublicKey(route.programId!),
-    decoded.payload.payerId,
-    decoded.payload.payeeId,
-    decoded.payload.tokenId,
-  );
+  if (envelopePayload.payeeId !== route.merchantParticipantId) {
+    return finalizePublicResponse(
+      ryvoChannelError(422, "invalid_ryvo_commitment", { reason: "merchant_mismatch" }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
 
-  let channel;
+  // Look up the payer's owner pubkey via the channel signer. The off-chain
+  // commitment is signed by the payer's `authorized_signer`, which is the
+  // owner pubkey by default. We use it as the lookup key for the channel
+  // bucket because it's the only payer-side identifier in the envelope.
+  let payerOwner: PublicKey;
   try {
-    channel = await fetchRyvoChannelState(runtime, channelState);
+    payerOwner = new PublicKey(envelopePayload.signer);
+  } catch {
+    return finalizePublicResponse(
+      ryvoChannelError(422, "invalid_ryvo_commitment", { reason: "signer_not_pubkey" }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  let lane: ResolvedChannelLane | null;
+  try {
+    lane = await fetchRyvoChannelLane(
+      runtime,
+      payerOwner,
+      route.merchantParticipantId!,
+      route.tokenId!,
+    );
   } catch (error) {
     return finalizePublicResponse(
       ryvoChannelError(503, "ryvo_channel_state_unavailable", {
@@ -1287,44 +1293,91 @@ export async function handleRyvoChannelRouteRequest(request: NextRequest): Promi
     );
   }
 
-  const validated = validateRyvoCommitmentEnvelope(runtime, route, envelope, channel);
-  if (!validated.ok) {
-    return finalizePublicResponse(validated.response, allowedMethods, requestedMethod === "HEAD");
+  if (!lane) {
+    return finalizePublicResponse(
+      ryvoChannelError(404, "ryvo_channel_not_found", {
+        payerOwner: payerOwner.toBase58(),
+        payeeParticipantId: route.merchantParticipantId,
+        tokenId: route.tokenId,
+      }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
   }
 
-  const channelKey = channelState.toBase58();
+  const channelKey = lane.channelBucketPda.toBase58();
   const ledger = await runtime.state.getRyvoChannelLedger(channelKey);
-  const settledCumulative = BigInt(channel.settledCumulative.toString());
+  const settledCumulative = lane.lane.settledCumulative;
   const ledgerLatest = ledger.latestAcceptedCommitted
     ? BigInt(ledger.latestAcceptedCommitted)
     : settledCumulative;
   const latestAcceptedCommitted = maxBigInt(settledCumulative, ledgerLatest);
+
+  const verification = verifyGatewayCommitmentEnvelopeFull(envelope, {
+    programId: route.programId!,
+    chainId: runtime.config.ryvoChainId,
+    messageDomain: route.messageDomain,
+    tokenId: route.tokenId!,
+    tokenMint: route.tokenMint ?? OFFICIAL_DEVNET_USDC_MINT,
+    payerParticipantId: lane.payerParticipantId,
+    payeeParticipantId: lane.payeeParticipantId,
+    authorizedSigner: lane.lane.authorizedSigner,
+    laneState: {
+      settledCumulative: lane.lane.settledCumulative,
+      lockedBalance: lane.lane.lockedBalance,
+      pendingUnlockAmount: lane.lane.pendingUnlockAmount,
+    },
+    previousAcceptedCommitted: latestAcceptedCommitted,
+    expectedAuthorizedSettler: runtime.config.payToWallet,
+  });
+
+  if (!verification.ok) {
+    const reason = verification.failureReason ?? "envelopeMalformed";
+    return finalizePublicResponse(
+      ryvoChannelError(statusForVerifyFailure(reason), "invalid_ryvo_commitment", {
+        reason,
+        message: verification.error,
+        ...(verification.headroom
+          ? {
+            maxAuthorized: verification.headroom.maxAuthorized.toString(),
+            settledCumulative: verification.headroom.settledCumulative.toString(),
+            effectiveLocked: verification.headroom.effectiveLocked.toString(),
+          }
+          : {}),
+      }),
+      allowedMethods,
+      requestedMethod === "HEAD",
+    );
+  }
+
+  const committedAmount = BigInt(verification.payload.committedAmount);
   const priceUnits = parseTokenAmountToUnits(route.priceTokenAmount ?? "0", route.tokenDecimals ?? 6);
   const expectedCommittedAmount = latestAcceptedCommitted + priceUnits;
-
-  if (validated.committedAmount !== expectedCommittedAmount) {
+  if (committedAmount !== expectedCommittedAmount) {
     return finalizePublicResponse(
       ryvoChannelError(402, "invalid_ryvo_commitment", {
         reason: "commitment_amount_mismatch",
         expectedCommittedAmount: expectedCommittedAmount.toString(),
-        receivedCommittedAmount: validated.committedAmount.toString(),
+        receivedCommittedAmount: committedAmount.toString(),
       }),
       allowedMethods,
       requestedMethod === "HEAD",
     );
   }
 
-  const headroom = calculateChannelHeadroom(channel, validated.committedAmount);
-  if (validated.committedAmount > headroom.maxAuthorized) {
-    return finalizePublicResponse(
-      ryvoChannelError(402, "insufficient_channel_headroom", {
-        maxAuthorized: headroom.maxAuthorized.toString(),
-        committedAmount: validated.committedAmount.toString(),
-      }),
-      allowedMethods,
-      requestedMethod === "HEAD",
-    );
-  }
+  const headroom = verification.headroom!;
+
+  await runtime.state.upsertRyvoChannelLaneMetadata({
+    channelKey,
+    metadata: {
+      payerParticipantId: lane.payerParticipantId,
+      payeeParticipantId: lane.payeeParticipantId,
+      tokenId: lane.tokenId,
+      channelBucket: channelKey,
+      authorizedSigner: lane.lane.authorizedSigner.toBase58(),
+      settledCumulative: settledCumulative.toString(),
+    },
+  });
 
   const requestHash = createHash("sha256").update(`${channelKey}:${requestId}`).digest("hex");
   const reservation = await runtime.state.reserveRyvoChannelCommitment({
@@ -1333,7 +1386,7 @@ export async function handleRyvoChannelRouteRequest(request: NextRequest): Promi
     requestHash,
     baselineCommittedAmount: settledCumulative.toString(),
     expectedPreviousCommittedAmount: latestAcceptedCommitted.toString(),
-    newCommittedAmount: validated.committedAmount.toString(),
+    newCommittedAmount: committedAmount.toString(),
   });
 
   if (!reservation.ok) {
@@ -1380,7 +1433,7 @@ export async function handleRyvoChannelRouteRequest(request: NextRequest): Promi
     channelKey,
     requestId,
     requestHash,
-    committedAmount: validated.committedAmount.toString(),
+    committedAmount: committedAmount.toString(),
     envelope,
   });
   await recordEvent(runtime.state, {
@@ -1392,7 +1445,7 @@ export async function handleRyvoChannelRouteRequest(request: NextRequest): Promi
     httpStatus: upstream.status,
     detail: {
       channel: channelKey,
-      committedAmount: validated.committedAmount.toString(),
+      committedAmount: committedAmount.toString(),
       priceTokenAmount: route.priceTokenAmount,
     },
   }, "ryvo_channel_access_granted");
@@ -1408,7 +1461,7 @@ export async function handleRyvoChannelRouteRequest(request: NextRequest): Promi
     tokenSymbol: route.tokenSymbol,
     tokenMint: route.tokenMint,
     channel: channelKey,
-    committedAmount: validated.committedAmount.toString(),
+    committedAmount: committedAmount.toString(),
     remainingHeadroom: headroom.remainingHeadroom.toString(),
     settlement: {
       mode: "settleCommitmentBundle",

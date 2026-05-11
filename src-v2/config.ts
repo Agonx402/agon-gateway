@@ -73,6 +73,21 @@ function readOptionalPositiveInteger(name: string, fallback?: string): number | 
   return parsed;
 }
 
+function readBoolean(name: string, fallback: boolean): boolean {
+  const raw = readOptionalString(name);
+  if (raw === undefined) {
+    return fallback;
+  }
+  const normalized = raw.toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no") {
+    return false;
+  }
+  throw new Error(`Environment variable ${name} must be a boolean (true/false).`);
+}
+
 function readOptionalU16(name: string): number | undefined {
   const value = readOptionalString(name);
   if (value === undefined) {
@@ -174,12 +189,16 @@ export function loadConfig(): GatewayConfig {
     ryvoProtocolProgramId: readOptionalString("RYVO_PROTOCOL_PROGRAM_ID"),
     ryvoProtocolDevnetUsdcTokenId,
     ryvoMerchantOwner: readOptionalString("RYVO_GATEWAY_MERCHANT_OWNER"),
-    ryvoMerchantParticipantId: readOptionalPositiveInteger("RYVO_GATEWAY_MERCHANT_PARTICIPANT_ID"),
+    ryvoMerchantParticipantId: readOptionalU16("RYVO_GATEWAY_MERCHANT_PARTICIPANT_ID"),
     ryvoMessageVersion: readPositiveInteger("RYVO_PROTOCOL_MESSAGE_VERSION", "1"),
     ryvoChainId: readPositiveInteger("RYVO_PROTOCOL_DEVNET_CHAIN_ID", "1"),
     ryvoChannelSnapshotTtlMs: readPositiveInteger("RYVO_CHANNEL_SNAPSHOT_TTL_MS", "2000"),
     ryvoChannelSettlementMinDelta: readString("RYVO_CHANNEL_SETTLEMENT_MIN_DELTA", "0.250000"),
     ryvoChannelSettlementMaxAgeSeconds: readPositiveInteger("RYVO_CHANNEL_SETTLEMENT_MAX_AGE_SECONDS", "300"),
     ryvoChannelSettlementMinHeadroomBps: readPositiveInteger("RYVO_CHANNEL_SETTLEMENT_MIN_HEADROOM_BPS", "1000"),
+    ryvoSettlerMaxChannelsPerCycle: readPositiveInteger("RYVO_SETTLER_MAX_CHANNELS_PER_CYCLE", "200"),
+    ryvoSettlerMaxBundleSize: readPositiveInteger("RYVO_SETTLER_MAX_BUNDLE_SIZE", "32"),
+    ryvoSettlerDryRun: readBoolean("RYVO_SETTLER_DRY_RUN", false),
+    ryvoSettlerForceSweepAfterSeconds: readPositiveInteger("RYVO_SETTLER_FORCE_SWEEP_AFTER_SECONDS", "86400"),
   };
 }

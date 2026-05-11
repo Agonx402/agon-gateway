@@ -5,5 +5,11 @@
     "app/**/*.ts": {
       "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/internal/settler/run",
+      "schedule": "0 0 * * *"
+    }
+  ]
 }
