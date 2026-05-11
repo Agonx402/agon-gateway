@@ -1305,7 +1305,11 @@ export async function handleRyvoChannelRouteRequest(request: NextRequest): Promi
     );
   }
 
-  const channelKey = lane.channelBucketPda.toBase58();
+  // Channel buckets pack many lanes; the bucket PDA alone is NOT unique per
+  // lane. Key Redis state by (bucket, payer, payee, tokenId) so each lane gets
+  // its own ledger / in-flight reservation instead of all lanes in a bucket
+  // serializing through one lock.
+  const channelKey = `${lane.channelBucketPda.toBase58()}:${lane.payerParticipantId}:${lane.payeeParticipantId}:${lane.tokenId}`;
   const ledger = await runtime.state.getRyvoChannelLedger(channelKey);
   const settledCumulative = lane.lane.settledCumulative;
   const ledgerLatest = ledger.latestAcceptedCommitted

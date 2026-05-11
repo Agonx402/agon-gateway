@@ -184,6 +184,15 @@ export class HostedGatewayState {
     newCommittedAmount: string;
     ttlSeconds?: number;
   }): Promise<RyvoChannelReservation> {
+    // ARGV layout:
+    //   1 = baselineCommittedAmount
+    //   2 = expectedPreviousCommittedAmount
+    //   3 = newCommittedAmount
+    //   4 = processing TTL (seconds, applied to the request key)
+    //   5 = requestId
+    //   6 = channelKey
+    //   7 = now (ms since epoch)
+    //   8 = stale-inflight threshold (ms) — inflight older than this is recycled
     const script = `
 local ledgerKey = KEYS[1]
 local requestKey = KEYS[2]
@@ -193,7 +202,12 @@ if existingRequest then
 end
 local inFlight = redis.call("HGET", ledgerKey, "inFlightRequestId")
 if inFlight then
-  return cjson.encode({ ok = false, state = inFlight, reason = "channel_busy" })
+  local startedAt = redis.call("HGET", ledgerKey, "inFlightStartedAt")
+  local age = tonumber(ARGV[7]) - tonumber(startedAt or "0")
+  if age < tonumber(ARGV[8]) then
+    return cjson.encode({ ok = false, state = inFlight, reason = "channel_busy" })
+  end
+  redis.call("HDEL", ledgerKey, "inFlightRequestId", "inFlightCommittedAmount", "inFlightStartedAt")
 end
 local latest = redis.call("HGET", ledgerKey, "latestAcceptedCommitted")
 if not latest then
@@ -208,6 +222,7 @@ redis.call("HSET", ledgerKey, "inFlightRequestId", ARGV[5], "inFlightCommittedAm
 redis.call("EXPIRE", ledgerKey, 2592000)
 return cjson.encode({ ok = true, latestAcceptedCommitted = latest })
 `;
+    const ttlSeconds = params.ttlSeconds ?? PROCESSING_TTL_SECONDS;
     const raw = await (this.redis as any).eval(
       script,
       [this.ryvoChannelLedgerKey(params.channelKey), this.ryvoChannelRequestKey(params.requestHash)],
@@ -215,10 +230,11 @@ return cjson.encode({ ok = true, latestAcceptedCommitted = latest })
         params.baselineCommittedAmount,
         params.expectedPreviousCommittedAmount,
         params.newCommittedAmount,
-        String(params.ttlSeconds ?? PROCESSING_TTL_SECONDS),
+        String(ttlSeconds),
         params.requestId,
         params.channelKey,
         String(Date.now()),
+        String(ttlSeconds * 1000),
       ],
     );
     return decodeLuaJsonReply<RyvoChannelReservation>(raw);
