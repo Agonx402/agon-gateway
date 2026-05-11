@@ -5,6 +5,26 @@ import type { GatewayConfig } from "./types";
 const PROCESSING_TTL_SECONDS = 120;
 const SETTLED_TTL_SECONDS = 86_400;
 
+/**
+ * @upstash/redis ships with `automaticDeserialization: true`, which JSON-parses
+ * any string Redis reply that happens to look like JSON. Our Lua scripts
+ * `cjson.encode(...)` their reply, so the client returns an already-parsed
+ * object. This helper accepts either form so we don't blow up on
+ * `JSON.parse("[object Object]")`.
+ */
+function decodeLuaJsonReply<T>(raw: unknown): T {
+  if (raw === null || raw === undefined) {
+    throw new Error("Lua reply was null/undefined");
+  }
+  if (typeof raw === "string") {
+    return JSON.parse(raw) as T;
+  }
+  if (typeof raw === "object") {
+    return raw as T;
+  }
+  throw new Error(`Unexpected Lua reply type: ${typeof raw}`);
+}
+
 export interface RateLimitOutcome {
   allowed: boolean;
   retryAfterSeconds: number;
@@ -201,7 +221,7 @@ return cjson.encode({ ok = true, latestAcceptedCommitted = latest })
         String(Date.now()),
       ],
     );
-    return JSON.parse(String(raw)) as RyvoChannelReservation;
+    return decodeLuaJsonReply<RyvoChannelReservation>(raw);
   }
 
   public async promoteRyvoChannelCommitment(params: {
