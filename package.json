@@ -10,8 +10,8 @@
     "demo:e2e": "tsx scripts/gateway-end-to-end-demo.ts"
   },
   "dependencies": {
-    "@ryvonetwork/sdk": "file:../ryvonetwork-sdk-0.6.0.tgz",
     "@coral-xyz/anchor": "^0.32.1",
+    "@ryvonetwork/sdk": "^0.6.0",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "@upstash/redis": "^1.37.0",
